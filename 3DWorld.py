@@ -245,7 +245,19 @@ def ensure_worker_running() -> bool:
             time.sleep(0.08)
         except Exception:
             pass
-    cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--session", str(_SESSION_ID)]
+    pid_tag = str(_WORKER_PID_PATH.name).lower()
+    role_tag = "das" if "das" in pid_tag else "tflir"
+    if bool(getattr(sys, "frozen", False)):
+        cmd = [
+            sys.executable,
+            "--3dworld-worker",
+            "--session",
+            str(_SESSION_ID),
+            "--role",
+            str(role_tag),
+        ]
+    else:
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--session", str(_SESSION_ID)]
     if not _TOKEN_CHECK_PRINTED:
         _TOKEN_CHECK_PRINTED = True
         token = _resolve_cesium_token()
@@ -260,9 +272,6 @@ def ensure_worker_running() -> bool:
             creation_flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
     except Exception:
         creation_flags = 0
-
-    pid_tag = str(_WORKER_PID_PATH.name).lower()
-    role_tag = "das" if "das" in pid_tag else "tflir"
 
     def _spawn_worker(single_process: bool) -> Optional[subprocess.Popen]:
         env = os.environ.copy()

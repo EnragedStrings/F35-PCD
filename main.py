@@ -3664,6 +3664,67 @@ def _firewall_helper_mode_from_argv(argv: Optional[List[str]] = None) -> Optiona
     return 0 if ok else 1
 
 
+def _3dworld_worker_mode_from_argv(argv: Optional[List[str]] = None) -> Optional[int]:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--3dworld-worker" not in args:
+        return None
+    session_id = ""
+    role = "tflir"
+    i = 0
+    while i < len(args):
+        tok = str(args[i]).strip().lower()
+        if tok == "--session" and i + 1 < len(args):
+            session_id = str(args[i + 1]).strip()
+            i += 2
+            continue
+        if tok == "--role" and i + 1 < len(args):
+            role = str(args[i + 1]).strip().lower() or "tflir"
+            i += 2
+            continue
+        i += 1
+    try:
+        mod = importlib.import_module("3DWorld")
+    except Exception as exc:
+        try:
+            print(f"[3DWORLD][WORKER_DISPATCH] import failed: {exc}")
+        except Exception:
+            pass
+        return 1
+    try:
+        base_cache = Path(getattr(mod, "_BASE_CACHE_DIR"))
+    except Exception:
+        base_cache = Path(__file__).resolve().parent / "CACHE" / "3dworld"
+    try:
+        if role == "das":
+            mod._WORKER_PID_PATH = base_cache / "worker_das_pid.txt"
+            mod._WORKER_LOG_PATH = base_cache / "worker_das.log"
+        else:
+            mod._WORKER_PID_PATH = base_cache / "worker_pid.txt"
+            mod._WORKER_LOG_PATH = base_cache / "worker.log"
+    except Exception:
+        pass
+    if session_id != "":
+        try:
+            mod._SESSION_ID = session_id
+            session_cache = base_cache / str(session_id)
+            mod._CACHE_DIR = session_cache
+            mod._POSE_PATH = session_cache / "pose.json"
+            mod._FRAME_PATH = session_cache / "tflir_frame.png"
+            mod._META_PATH = session_cache / "frame_meta.json"
+            mod._DAS_FRAME_PATH = session_cache / "das_frame.png"
+            mod._DAS_META_PATH = session_cache / "das_frame_meta.json"
+        except Exception:
+            pass
+    try:
+        return int(mod._run_worker())
+    except Exception as exc:
+        try:
+            print(f"[3DWORLD][WORKER_DISPATCH] run failed: {exc}")
+        except Exception:
+            pass
+        return 1
+
+
 def _dist_collect_machine_identity() -> Dict[str, str]:
     identity: Dict[str, str] = {}
     tpm_raw = _run_powershell_capture(
@@ -36115,6 +36176,9 @@ def main() -> None:
         frame_server.server_close()
 
 if __name__ == "__main__":
+    _worker_exit = _3dworld_worker_mode_from_argv()
+    if _worker_exit is not None:
+        raise SystemExit(int(_worker_exit))
     _fw_helper_exit = _firewall_helper_mode_from_argv()
     if _fw_helper_exit is None:
         main()
