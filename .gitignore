@@ -1,0 +1,16 @@
+DEVELOPER/dist_secrets.json
+dist_secrets.json
+*.distsec.json
+*.distsec
+
+# Project runtime/build/private data
+CACHE/
+__pycache__/
+COMPILED/
+DATA/
+DEVELOPER/
+PMD/
+Recordings/
+USERS/
+dist_secret_material.py
+pcd_settings.json

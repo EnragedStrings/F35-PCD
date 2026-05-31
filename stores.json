@@ -1,0 +1,1584 @@
+{
+  "weapons": {
+    "AGM-154": {
+      "icon": "AGM/AGM-154.png",
+      "weight_lbs": 1065,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "AGM-158": {
+      "icon": "AGM/AGM-158.png",
+      "weight_lbs": 2250,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "AIM-120": {
+      "icon": "MRM/AIM-120.png",
+      "weight_lbs": 358,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "MRM"
+    },
+    "AIM-132": {
+      "icon": "SRM/AIM132/AIM-132.png",
+      "weight_lbs": 194,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "SRM"
+    },
+    "AIM-9X": {
+      "icon": "SRM/AIM9X/AIM-9.png",
+      "weight_lbs": 190,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "SRM"
+    },
+    "BDU57": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "BDU58": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "BDU60": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "CBU-103": {
+      "icon": "CBU/CBU-103.png",
+      "weight_lbs": 1000,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "CBU100": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "CBU105": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "CBU99": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GAU22A": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-10": {
+      "icon": "GBU/GBU-10.png",
+      "weight_lbs": 2000,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-12": {
+      "icon": "GBU/GBU-12.png",
+      "weight_lbs": 500,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-16": {
+      "icon": "GBU/GBU-16.png",
+      "weight_lbs": 1000,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-24": {
+      "icon": "GBU/GBU-24.png",
+      "weight_lbs": 2200,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-31": {
+      "icon": "GBU/GBU-31.png",
+      "weight_lbs": 2115,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-32": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU-38": {
+      "icon": "GBU/GBU-38.png",
+      "weight_lbs": 559,
+      "carriage": [
+        "INT",
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "GBU39": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "INT"
+      ],
+      "type": "AS"
+    },
+    "GBU53": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "INT"
+      ],
+      "type": "AS"
+    },
+    "MK82": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "MK83": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "MK84": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    },
+    "MXU648": {
+      "icon": "",
+      "weight_lbs": 0,
+      "carriage": [
+        "EXT"
+      ],
+      "type": "AS"
+    }
+  },
+  "inventory": {
+    "type_order": [
+      "SRM",
+      "MRM",
+      "GP",
+      "GBU",
+      "AGM",
+      "PGM",
+      "CBU",
+      "PODTK",
+      "GUN",
+      "OTHER",
+      "SRMTT",
+      "MRMTT",
+      "LRMTT"
+    ],
+    "weapon_aliases": {
+      "AGM154A": "AGM154A",
+      "AGM154C": "AGM154C",
+      "AGM158": "AGM158",
+      "AIM120C": "AIM120C",
+      "AIM132": "AIM132",
+      "AIM9X": "AIM9X",
+      "BDU57": "BDU57",
+      "BDU58": "BDU58",
+      "BDU60": "BDU60",
+      "CBU100": "CBU100",
+      "CBU103": "CBU103",
+      "CBU105": "CBU105",
+      "CBU99": "CBU99",
+      "GAU22A": "GAU22A",
+      "GBU10": "GBU10",
+      "GBU12": "GBU12",
+      "GBU16": "GBU16",
+      "GBU24": "GBU24",
+      "GBU31": "GBU31",
+      "GBU32": "GBU32",
+      "GBU38": "GBU38",
+      "GBU39": "GBU39",
+      "GBU53": "GBU53",
+      "MK82": "MK82",
+      "MK83": "MK83",
+      "MK84": "MK84",
+      "MXU648": "MXU648"
+    },
+    "stations": {
+      "STA1": {
+        "SRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM9X",
+              "qty": 1
+            },
+            {
+              "weapon": "AIM132",
+              "qty": 1
+            }
+          ]
+        },
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA11": {
+        "SRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM9X",
+              "qty": 1
+            },
+            {
+              "weapon": "AIM132",
+              "qty": 1
+            }
+          ]
+        },
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA2": {
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "GBU": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "GP": {
+          "BRU68": [
+            {
+              "weapon": "MK82",
+              "qty": 1
+            },
+            {
+              "weapon": "MK83",
+              "qty": 1
+            },
+            {
+              "weapon": "MK84",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU99",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU100",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        },
+        "OTHER": {
+          "BRU68": [
+            {
+              "weapon": "BDU57",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU58",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU60",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "MXU648",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA10": {
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "GBU": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "GP": {
+          "BRU68": [
+            {
+              "weapon": "MK82",
+              "qty": 1
+            },
+            {
+              "weapon": "MK83",
+              "qty": 1
+            },
+            {
+              "weapon": "MK84",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU99",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU100",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        },
+        "OTHER": {
+          "BRU68": [
+            {
+              "weapon": "BDU57",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU58",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU60",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "MXU648",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA3": {
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "GBU": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "GP": {
+          "BRU68": [
+            {
+              "weapon": "MK82",
+              "qty": 1
+            },
+            {
+              "weapon": "MK83",
+              "qty": 1
+            },
+            {
+              "weapon": "MK84",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU99",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU100",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        },
+        "OTHER": {
+          "BRU68": [
+            {
+              "weapon": "BDU57",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU58",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU60",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "MXU648",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA9": {
+        "MRM": {
+          "LAU151A": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "GBU": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "GP": {
+          "BRU68": [
+            {
+              "weapon": "MK82",
+              "qty": 1
+            },
+            {
+              "weapon": "MK83",
+              "qty": 1
+            },
+            {
+              "weapon": "MK84",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU99",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU100",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU16",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        },
+        "OTHER": {
+          "BRU68": [
+            {
+              "weapon": "BDU57",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU58",
+              "qty": 1
+            },
+            {
+              "weapon": "BDU60",
+              "qty": 1
+            }
+          ],
+          "PYLON": [
+            {
+              "weapon": "MXU648",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA4": {
+        "GBU": {
+          "BRU61": [
+            {
+              "weapon": "GBU39",
+              "qty": 4
+            },
+            {
+              "weapon": "GBU53",
+              "qty": 4
+            }
+          ],
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU61": [
+            {
+              "weapon": "GBU39",
+              "qty": 4
+            },
+            {
+              "weapon": "GBU53",
+              "qty": 4
+            }
+          ],
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA8": {
+        "GBU": {
+          "BRU61": [
+            {
+              "weapon": "GBU39",
+              "qty": 4
+            },
+            {
+              "weapon": "GBU53",
+              "qty": 4
+            }
+          ],
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            }
+          ]
+        },
+        "AGM": {
+          "BRU68": [
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM158",
+              "qty": 1
+            }
+          ]
+        },
+        "CBU": {
+          "BRU68": [
+            {
+              "weapon": "CBU103",
+              "qty": 1
+            },
+            {
+              "weapon": "CBU105",
+              "qty": 1
+            }
+          ]
+        },
+        "PGM": {
+          "BRU61": [
+            {
+              "weapon": "GBU39",
+              "qty": 4
+            },
+            {
+              "weapon": "GBU53",
+              "qty": 4
+            }
+          ],
+          "BRU68": [
+            {
+              "weapon": "GBU12",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU31",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU32",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU38",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU10",
+              "qty": 1
+            },
+            {
+              "weapon": "GBU24",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154A",
+              "qty": 1
+            },
+            {
+              "weapon": "AGM154C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA5": {
+        "MRM": {
+          "LAU147": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA7": {
+        "MRM": {
+          "LAU147": [
+            {
+              "weapon": "AIM120C",
+              "qty": 1
+            }
+          ]
+        }
+      },
+      "STA6": {
+        "GUN": {
+          "GUN": [
+            {
+              "weapon": "GAU22A",
+              "qty": 1
+            }
+          ]
+        }
+      }
+    },
+    "fuzes": {
+      "GBU31": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        },
+        {
+          "fuze": "FMU152\nFMU143",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "FMU139\nFMU143",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        }
+      ],
+      "GBU32": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU38": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU12": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU16": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU10": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU24": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU39": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ],
+      "GBU53": [
+        {
+          "fuze": "FMU152",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2",
+            "DLY3"
+          ]
+        },
+        {
+          "fuze": "FMU139",
+          "modes": [
+            "INST",
+            "DLY1",
+            "DLY2"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU152",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "DSU33\nFMU139",
+          "modes": [
+            "AIR\nBURST",
+            "AIR\nBURST\nIMPACT"
+          ]
+        },
+        {
+          "fuze": "M904\nF152",
+          "modes": [
+            "INST",
+            "DLY"
+          ]
+        }
+      ]
+    }
+  }
+}
