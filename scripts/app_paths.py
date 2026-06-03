@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import sys
 from pathlib import Path
@@ -12,7 +12,10 @@ def is_frozen() -> bool:
 def app_base_dir() -> Path:
     if is_frozen():
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    module_dir = Path(__file__).resolve().parent
+    if module_dir.name.lower() == "scripts":
+        return module_dir.parent
+    return module_dir
 
 
 def bundle_base_dir() -> Path:
@@ -115,3 +118,4 @@ def resolve_runtime_path(path_text: str) -> Path:
     if bundle_candidate.exists():
         return bundle_candidate
     return app_candidate
+

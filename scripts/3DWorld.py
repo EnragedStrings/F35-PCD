@@ -15,11 +15,20 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 
-_ROOT = Path(__file__).resolve().parent
 try:
-    from app_paths import writable_path  # type: ignore
+    from app_paths import app_base_dir, writable_path  # type: ignore
 except Exception:
+    app_base_dir = None  # type: ignore
     writable_path = None  # type: ignore
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if callable(app_base_dir):
+    try:
+        _ROOT = Path(app_base_dir())
+    except Exception:
+        _ROOT = _SCRIPT_DIR.parent if _SCRIPT_DIR.name.lower() == "scripts" else _SCRIPT_DIR
+else:
+    _ROOT = _SCRIPT_DIR.parent if _SCRIPT_DIR.name.lower() == "scripts" else _SCRIPT_DIR
 
 if callable(writable_path):
     try:
@@ -43,6 +52,7 @@ _TOKEN_CHECK_PRINTED = False
 _LAST_SCENE_DIAG_TS = {"tflir": 0, "das": 0}
 _LAST_SCENE_DIAG_KEY = {"tflir": "", "das": ""}
 _LAST_NOFRAME_WARN_MS = {"tflir": 0, "das": 0}
+_LAST_WORKER_RETRY_MS = 0
 
 
 def _worker_hide_window_enabled() -> bool:
@@ -552,6 +562,7 @@ def update_pose(
 
 def latest_frame_path(max_age_ms: int = 3000) -> Optional[str]:
     try:
+        _ensure_worker_retry()
         if not _FRAME_PATH.exists() or not _META_PATH.exists():
             _maybe_log_no_frame("tflir", "missing_frame_or_meta")
             return None
@@ -569,6 +580,7 @@ def latest_frame_path(max_age_ms: int = 3000) -> Optional[str]:
 
 def latest_das_frame_path(max_age_ms: int = 3000) -> Optional[str]:
     try:
+        _ensure_worker_retry()
         if not _DAS_FRAME_PATH.exists() or not _DAS_META_PATH.exists():
             _maybe_log_no_frame("das", "missing_frame_or_meta")
             return None
@@ -626,6 +638,25 @@ def _maybe_log_no_frame(mode: str, reason: str) -> None:
             f"[3DWORLD][{m.upper()}] no_frame reason={reason} worker_alive={int(bool(proc_alive))} "
             f"pid={pid_txt} log={_WORKER_LOG_PATH}"
         )
+    except Exception:
+        return
+
+
+def _ensure_worker_retry() -> None:
+    """
+    If frame readers are called before update_pose, make sure the worker still
+    gets a chance to spawn. This prevents sticky no-frame states where the
+    worker never starts because pose extraction temporarily returns None.
+    """
+    global _LAST_WORKER_RETRY_MS
+    try:
+        if _is_proc_alive(_WORKER_PROC):
+            return
+        now_ms = int(time.time() * 1000)
+        if (now_ms - int(_LAST_WORKER_RETRY_MS)) < 1200:
+            return
+        _LAST_WORKER_RETRY_MS = now_ms
+        ensure_worker_running()
     except Exception:
         return
 

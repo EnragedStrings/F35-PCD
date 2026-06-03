@@ -18,7 +18,11 @@ class ButtonType(str, Enum):
     DOUBLE_FUNCTION = "double_function"
     TRIPLE_FUNCTION = "triple_function"
     GOL = "gol"
+    GROUP_OPTION_LIST = "gol"  # Alias for legacy callsites.
     PAGE_ACCESS = "page_access"
+    DATA_ENTRY = "data_entry"
+    SLIDER_BAR = "slider_bar"
+    INC_DEC = "inc_dec"
 
 
 @dataclass
@@ -45,6 +49,9 @@ class ButtonState:
     v_align: str = "center"  # center | top
     padding: int = 2
     font_size: int = 16
+    # Centralized behavior policy: when True, button action should be
+    # executed after the flash interval instead of immediately.
+    execute_after_flash: Optional[bool] = None
 
 
 def _draw_text_lines(
@@ -80,7 +87,7 @@ def _draw_text_lines(
         text_rects.append(r)
         y += surf.get_height() + 1
 
-    flashing = flash_until_ms > now_ms
+    flashing = _is_flashing(flash_until_ms, now_ms)
     if flashing and text_rects:
         flash_rect = text_rects[0].copy()
         for r in text_rects[1:]:
@@ -101,6 +108,13 @@ def _draw_box_around_lines(surface: pygame.Surface, rects: List[pygame.Rect]) ->
         box.union_ip(r)
     box.inflate_ip(4, 2)
     pygame.draw.rect(surface, COLOR_WHITE, box, 1)
+
+
+def _is_flashing(flash_until_ms: int, now_ms: int) -> bool:
+    # Backward compatible flashing semantics:
+    # - Absolute timer mode: flash_until_ms is a future tick timestamp.
+    # - Boolean mode: legacy callsites pass 1 when already in flashing phase.
+    return bool(int(flash_until_ms) == 1 or int(flash_until_ms) > int(now_ms))
 
 
 def render_button(
@@ -162,7 +176,7 @@ def render_button(
                 v_align=state.v_align,
                 padding=state.padding,
             )
-            if state.is_on and state.flash_until_ms <= now_ms and not unavailable:
+            if state.is_on and (not _is_flashing(state.flash_until_ms, now_ms)) and not unavailable:
                 font = get_font(state.font_size)
                 rendered = [font.render(line, True, color) for line in state.text.split("\n")]
                 total_h = sum(r.get_height() for r in rendered) + max(0, len(rendered) - 1)
@@ -237,7 +251,7 @@ def render_button(
             y = rect.top + state.padding
         else:
             y = rect.centery - total_h // 2
-        flashing = state.flash_until_ms > now_ms
+        flashing = _is_flashing(state.flash_until_ms, now_ms)
         for (text, color, selected), surf in zip(display_lines, rendered):
             if flashing:
                 surf = font.render(text, True, COLOR_BLACK)
@@ -277,7 +291,7 @@ def render_button(
         else:
             y = rect.centery - total_h // 2
 
-        flashing = state.flash_until_ms > now_ms
+        flashing = _is_flashing(state.flash_until_ms, now_ms)
         text_rects: List[pygame.Rect] = []
         for surf in rendered:
             if state.h_align == "left":
@@ -349,3 +363,21 @@ def activate_button(state: ButtonState, now_ms: int, flash_ms: int = 250) -> Opt
         return "page_access"
 
     return "pressed"
+
+
+def button_executes_after_flash(state: ButtonState) -> bool:
+    # Explicit override always wins.
+    if state.execute_after_flash is not None:
+        return bool(state.execute_after_flash)
+    # Labels never execute actions.
+    if state.button_type == ButtonType.STATUS_LABEL:
+        return False
+    # Standardized policy: all actionable buttons execute after flash unless
+    # a specific caller overrides with execute_after_flash=False.
+    return True
+
+
+def button_action_due_ms(state: ButtonState, now_ms: int) -> int:
+    if not button_executes_after_flash(state):
+        return int(now_ms)
+    return int(max(int(now_ms), int(state.flash_until_ms)))

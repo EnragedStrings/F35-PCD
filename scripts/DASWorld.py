@@ -8,6 +8,7 @@ from typing import Dict, Optional
 
 
 _ROOT = Path(__file__).resolve().parent
+_APP_ROOT = _ROOT.parent if _ROOT.name.lower() == "scripts" else _ROOT
 _SRC_PATH = _ROOT / "3DWorld.py"
 _BACKING = None
 
@@ -36,7 +37,7 @@ def _load_backing():
     try:
         base_cache = Path(getattr(mod, "_BASE_CACHE_DIR"))
     except Exception:
-        base_cache = _ROOT / "CACHE" / "3dworld"
+        base_cache = _APP_ROOT / "CACHE" / "3dworld"
     sid = f"das_{os.getpid()}_{int(time.time() * 1000)}"
     try:
         mod._SESSION_ID = sid

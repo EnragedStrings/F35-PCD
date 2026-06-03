@@ -56,10 +56,32 @@ try:
 except Exception:
     websocket_client = None  # type: ignore
 
+# Prefer modularized support code from ./scripts while keeping main.py at root.
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
+if os.path.isdir(_SCRIPTS_DIR):
+    _scripts_norm = os.path.normcase(os.path.abspath(_SCRIPTS_DIR))
+    _path_norm = [os.path.normcase(os.path.abspath(p)) for p in sys.path]
+    if _scripts_norm not in _path_norm:
+        sys.path.insert(0, _SCRIPTS_DIR)
+
 import formats
 import app_paths
 from app_paths import is_frozen, migrate_legacy_writable_entries, resource_path, writable_path
-from button_types import ButtonState, ButtonType, activate_button, render_button
+from button_types import (
+    ButtonState,
+    ButtonType,
+    activate_button,
+    button_action_due_ms,
+    button_executes_after_flash,
+    render_button,
+)
+try:
+    from dist_runtime import *  # type: ignore  # noqa: F401,F403
+    from dist_runtime import dist_set_secrets  # type: ignore
+except Exception:
+    from dist_runtime_stub import *  # type: ignore  # noqa: F401,F403
+    from dist_runtime_stub import dist_set_secrets  # type: ignore
+
 try:
     from dist_secret_material import (
         DistSecretMaterial,
@@ -68,6 +90,7 @@ try:
         verify_credential_hash as _dist_verify_credential_hash,
     )
 except Exception as _dist_import_exc:
+    _DIST_IMPORT_ERROR_TEXT = str(_dist_import_exc)
     @dataclass(frozen=True)
     class DistSecretMaterial:  # type: ignore[no-redef]
         admin_cred_salt: str = ""
@@ -90,14 +113,14 @@ except Exception as _dist_import_exc:
 
     def load_dist_secrets(search_paths: Optional[List[Path]] = None) -> Tuple[Optional[DistSecretMaterial], str]:  # type: ignore[no-redef]
         _ = search_paths
-        return None, f"dist_secret_material unavailable: {_dist_import_exc}"
+        return None, f"dist_secret_material unavailable: {_DIST_IMPORT_ERROR_TEXT}"
 
     def _dist_verify_credential_hash(expected_hash: object, salt: object, value: object) -> bool:  # type: ignore[no-redef]
         _ = (expected_hash, salt, value)
         return False
 
     try:
-        print(f"[DIST][IMPORT] dist_secret_material unavailable, continuing without DIST secrets: {_dist_import_exc}")
+        print(f"[DIST][IMPORT] dist_secret_material unavailable, continuing without DIST secrets: {_DIST_IMPORT_ERROR_TEXT}")
     except Exception:
         pass
 from formats import (
@@ -133,6 +156,14 @@ def _get_3dworld_module():
 
 def _push_pose_to_3dworld(now_ms: int, ins_gps_state: dict, active_portal_formats: Optional[List[object]] = None) -> None:
     global _THREEDWORLD_LAST_PUSH_MS
+    # When a dedicated TFLIR/DAS format instance is actively pushing pose to
+    # its worker, skip generic main-loop pushes to avoid camera/polarity races.
+    try:
+        direct_ms = int(getattr(formats, "_3DWORLD_DIRECT_POSE_PUSH_MS", 0) or 0)
+    except Exception:
+        direct_ms = 0
+    if direct_ms > 0 and (int(now_ms) - int(direct_ms)) < 500:
+        return
     if (int(now_ms) - int(_THREEDWORLD_LAST_PUSH_MS)) < 20:
         return
     mod = _get_3dworld_module()
@@ -400,101 +431,31 @@ LABEL_COLOR = (0, 255, 0)
 LOADING_COLOR = (0, 255, 0)
 CROSSHAIR_COLOR = (255, 0, 0)
 CROSSHAIR_SIZE = 25
-STATUS_MENU_ITEMS = {
-    "CRUS": (1, 0, "CRUS>"),
-    "DATA_LINK": (1, 1, "DATA\nLINK>"),
-    "ECS": (1, 2, "ECS>"),
-    "HMD": (1, 3, "HMD>"),
-    "DIST_CONFIG": (1, 4, "DIST\nCONFIG>"),
-    "INS_GPS": (2, 0, "INS\nGPS>"),
-    "LITES": (2, 1, "LITES>"),
-    "ON_OFF": (2, 2, "ON\nOFF>"),
-    "PMD_DR": (2, 3, "PMD/DR>"),
-    "SECLVL": (2, 4, "SECLVL>"),
-}
-ON_OFF_CELL_BUTTONS: List[Tuple[str, str]] = [
-    ("A2", "ACE"),
-    ("B2", "BUR"),
-    ("C2", "CNI-A"),
-    ("D2", "CNI-B"),
-    ("E2", "CM-L"),
-    ("A3", "CM-R"),
-    ("B3", "DAS-BA"),
-    ("C3", "DAS-BF"),
-    ("D3", "DAS-L"),
-    ("E3", "DAS-R"),
-    ("A4", "DAS-TA"),
-    ("B4", "DAS-TF"),
-    ("C4", "DMC-L"),
-    ("D4", "DMC-R"),
-    ("E4", "DMC-H"),
-    ("A5", "EW-SYS"),
-    ("B5", "EW-B"),
-    ("C5", "EW-AFT"),
-    ("D5", "ICP-A"),
-    ("E5", "ICP-B"),
-    ("A6", "ICP-C"),
-    ("B6", "GPS"),
-    ("C6", "INS"),
-    ("D6", "LADC"),
-    ("B7", "PMD"),
-    ("C7", "RADAR"),
-    ("D7", "EOTS"),
-]
-ON_OFF_BUTTON_ZONE_KEYS = {f"ON_OFF_{cell_name}" for cell_name, _label in ON_OFF_CELL_BUTTONS}
-ON_OFF_BUTTON_KEY_TO_LABEL: Dict[str, str] = {
-    f"ON_OFF_{cell_name}": str(label).upper().strip()
-    for cell_name, label in ON_OFF_CELL_BUTTONS
-}
-ON_OFF_LABEL_TO_BUTTON_KEY: Dict[str, str] = {
-    str(label).upper().strip(): f"ON_OFF_{cell_name}"
-    for cell_name, label in ON_OFF_CELL_BUTTONS
-}
-ON_OFF_LABELS: List[str] = [str(label).upper().strip() for _cell_name, label in ON_OFF_CELL_BUTTONS]
-ON_OFF_BIT_MIN_MS = 35000
-ON_OFF_BIT_MAX_MS = 50000
-ON_OFF_OFF_TO_GRAY_MS = 5000
 
+# Extracted large static configuration/constants
+from main_config import *  # noqa: F401,F403
+from pmd_runtime_helpers import (
+    PMD_PLUGIN_ARCHIVE_EXTS,
+    pmd_extract_archive as _pmd_extract_archive,
+    pmd_wrap_text as _pmd_wrap_text,
+    sanitize_pmd_id as _sanitize_pmd_id,
+)
+from pmd_plugin_ops import (
+    pmd_deactivate_plugin as _pmd_deactivate_plugin_impl,
+    pmd_disable_plugin as _pmd_disable_plugin_impl,
+    pmd_enable_plugin as _pmd_enable_plugin_impl,
+    pmd_manifest_for_dir as _pmd_manifest_for_dir_impl,
+    pmd_status_menu_action_from_plugin_result as _pmd_status_menu_action_from_plugin_result_impl,
+    pmd_status_menu_zone_key as _pmd_status_menu_zone_key_impl,
+)
+from datalink_payload_helpers import (
+    udp_relay_image_bytes_from_entry as _udp_relay_image_bytes_from_entry_impl,
+    udp_relay_pack_datalink_payload_blob as _udp_relay_pack_datalink_payload_blob_impl,
+    udp_relay_referenced_image_tokens as _udp_relay_referenced_image_tokens_impl,
+    udp_relay_unpack_datalink_payload_blob as _udp_relay_unpack_datalink_payload_blob_impl,
+)
+from adsb_worker_runtime import AdsbWorkerRuntime
 
-def _default_on_off_states() -> Dict[str, bool]:
-    return {key: True for key in ON_OFF_BUTTON_ZONE_KEYS}
-PMD_DR_TANK_LIMITS: Dict[str, int] = {
-    "F1": 5100,
-    "F1I": 1300,
-    "F2L": 1150,
-    "F2R": 1150,
-    "F3L": 2150,
-    "F3R": 2150,
-    "F4L": 1100,
-    "F4R": 1100,
-    "F5L": 1000,
-    "F5R": 1000,
-    "LW": 1150,
-    "RW": 1150,
-}
-PMD_FUEL_DEGRD_TANK_ORDER: List[str] = [
-    "F1",
-    "F2L",
-    "F2R",
-    "F3L",
-    "F3R",
-    "F4L",
-    "F4R",
-    "F5L",
-    "F5R",
-    "LW",
-    "RW",
-]
-PMD_FUEL_DEGRD_VALVE_LAYOUT: Dict[str, List[str]] = {
-    "F1": ["V1", "V2", "V3"],
-    "F3L": ["V1", "V2"],
-    "F3R": ["V1", "V2"],
-}
-PMD_FUEL_DEGRD_VALVE_DEFAULTS: Dict[str, Dict[str, bool]] = {
-    "F1": {"V1": True, "V2": False, "V3": False},
-    "F3L": {"V1": False, "V2": False},
-    "F3R": {"V1": False, "V2": False},
-}
 _PMD_DR_CKLST_LEGACY_INSTANCE: Optional[formats.CklstLegacyFormat] = None
 
 
@@ -526,54 +487,6 @@ def _default_fuel_degrd_state() -> Dict[str, object]:
             for tank in PMD_FUEL_DEGRD_VALVE_LAYOUT.keys()
         },
     }
-PMD_STORES_STATION_ORDER: List[str] = [
-    "STA1",
-    "STA2",
-    "STA3",
-    "STA4",
-    "STA5",
-    "STA7",
-    "STA8",
-    "STA9",
-    "STA10",
-    "STA11",
-]
-PMD_STORES_EXTERNAL_STATIONS = {"STA1", "STA2", "STA3", "STA9", "STA10", "STA11"}
-PMD_STORES_INTERNAL_STATIONS = {"STA4", "STA5", "STA7", "STA8"}
-# These stations support only air-to-air stores (no AS weapons).
-PMD_STORES_AA_ONLY_STATIONS = {"STA1", "STA5", "STA7", "STA11"}
-PMD_STORES_DEFAULT_LOADOUT: Dict[str, str] = {
-    "STA4": "GBU-38",
-    "STA5": "AIM-120",
-    # Internal stations only, mirrored.
-    "STA8": "GBU-38",
-    "STA7": "AIM-120",
-}
-PHM_SYSTEM_LCN_PREFIX: Dict[str, str] = {
-    "AIR_FRM": "20",
-    "PROP": "45",
-    "EPS": "24",
-    "FCS": "27",
-    "FPS": "26",
-    "FUEL": "28",
-    "GEAR": "32",
-    "HYD": "29",
-    "LIF_SUP": "60",
-    "PTMS": "21",
-    "VSP": "31",
-    "COM_NAV": "23",
-    "DAS": "97",
-    "DISPL": "46",
-    "EW": "94",
-    "GUN": "94",
-    "EOTS": "97",
-    "MSP": "96",
-    "RADAR": "96",
-    "RIUS": "93",
-    "SRES": "94",
-    "LIGHTG": "33",
-}
-
 def _build_phm_system_subsystem_map() -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     raw = getattr(formats, "PHM_SYSTEM_SUBSYSTEMS", {})
@@ -921,7 +834,6 @@ SETTINGS_PATH = writable_path("pcd_settings.json")
 PMD_ROOT_PATH = writable_path("PMD")
 PMD_MANIFEST_FILE = "plugin.json"
 PMD_DEFAULT_ENTRY_FILE = "main.py"
-PMD_PLUGIN_ARCHIVE_EXTS: Set[str] = {".pmd", ".zip"}
 PMD_AUTOLOAD_SETTINGS_KEY = "pmd_autoload_ids"
 PMD_ENABLED_SETTINGS_KEY = "pmd_enabled_ids"
 WINDOW_STATE_SETTINGS_KEY = "window_state"
@@ -2219,175 +2131,14 @@ def load_settings() -> dict:
     return dict(defaults)
 
 
-def _http_get_json(url: str, timeout: float = ADSB_HTTP_TIMEOUT_S) -> Optional[Dict[str, object]]:
-    req = urllib_request.Request(
-        str(url),
-        headers={
-            "User-Agent": "F35-PCD-Sim/1.0",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib_request.urlopen(req, timeout=float(timeout)) as resp:
-            payload = resp.read().decode("utf-8", errors="ignore")
-        parsed = json.loads(payload)
-        if isinstance(parsed, dict):
-            return parsed
-    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, OSError, json.JSONDecodeError):
-        return None
-    except Exception:
-        return None
-    return None
-
-
-def _safe_float_or_none(value: object) -> Optional[float]:
-    try:
-        out = float(value)
-    except Exception:
-        return None
-    if math.isfinite(out):
-        return out
-    return None
-
-
-def get_general_geo_area_from_ip(timeout: float = ADSB_HTTP_TIMEOUT_S) -> Optional[Dict[str, object]]:
-    """
-    Resolve an approximate user geo area from public IP.
-
-    Returns:
-        dict with keys: lat, lon, city, region, country, ip, source
-        or None if lookup failed.
-    """
-    providers: List[Tuple[str, str]] = [
-        ("ipapi", "https://ipapi.co/json/"),
-        ("ipinfo", "https://ipinfo.io/json"),
-        ("ipwhois", "https://ipwho.is/"),
-    ]
-    for provider, url in providers:
-        data = _http_get_json(url, timeout=timeout)
-        if not isinstance(data, dict):
-            continue
-        try:
-            if provider == "ipapi":
-                if bool(data.get("error", False)):
-                    continue
-                lat = _safe_float_or_none(data.get("latitude"))
-                lon = _safe_float_or_none(data.get("longitude"))
-                city = str(data.get("city", "")).strip()
-                region = str(data.get("region", "")).strip()
-                country = str(data.get("country_name", data.get("country", ""))).strip()
-                ip = str(data.get("ip", "")).strip()
-            elif provider == "ipinfo":
-                loc = str(data.get("loc", "")).strip()
-                parts = [p.strip() for p in loc.split(",")]
-                if len(parts) != 2:
-                    continue
-                lat = _safe_float_or_none(parts[0])
-                lon = _safe_float_or_none(parts[1])
-                city = str(data.get("city", "")).strip()
-                region = str(data.get("region", "")).strip()
-                country = str(data.get("country", "")).strip()
-                ip = str(data.get("ip", "")).strip()
-            else:
-                if data.get("success") is False:
-                    continue
-                lat = _safe_float_or_none(data.get("latitude"))
-                lon = _safe_float_or_none(data.get("longitude"))
-                city = str(data.get("city", "")).strip()
-                region = str(data.get("region", "")).strip()
-                country = str(data.get("country", "")).strip()
-                ip = str(data.get("ip", "")).strip()
-            if lat is None or lon is None:
-                continue
-            return {
-                "lat": float(lat),
-                "lon": float(lon),
-                "city": city,
-                "region": region,
-                "country": country,
-                "ip": ip,
-                "source": provider,
-            }
-        except Exception:
-            continue
-    return None
-
-
-def get_adsb_data(lat: float, lon: float, radius: int = 100, min_interval: int = 10):
-    """
-    Query ADSB.lol around a point with built-in per-process rate limiting.
-    If called too soon, returns the last successful cached response.
-    """
-    if not hasattr(get_adsb_data, "_last_request_time"):
-        get_adsb_data._last_request_time = 0.0
-    if not hasattr(get_adsb_data, "_last_data"):
-        get_adsb_data._last_data = None
-    if not hasattr(get_adsb_data, "_last_error_log_time"):
-        get_adsb_data._last_error_log_time = 0.0
-
-    now = time.time()
-    min_interval_s = max(10, int(min_interval))
-    if now - float(get_adsb_data._last_request_time) < float(min_interval_s):
-        return get_adsb_data._last_data
-
-    try:
-        lat_f = float(lat)
-        lon_f = float(lon)
-        radius_i = max(1, int(radius))
-    except Exception:
-        return get_adsb_data._last_data
-
-    url = f"https://api.adsb.lol/v2/point/{lat_f}/{lon_f}/{radius_i}"
-    data = _http_get_json(url, timeout=10.0)
-    if isinstance(data, dict):
-        get_adsb_data._last_request_time = now
-        get_adsb_data._last_data = data
-        return data
-    if (now - float(get_adsb_data._last_error_log_time)) >= 30.0:
-        print("ADSB warning: ADSB.lol point request/parse failed (using last cached data)")
-        get_adsb_data._last_error_log_time = now
-    return get_adsb_data._last_data
-
-
-def get_adsb_mil_data(min_interval: int = ADSB_MIL_MIN_INTERVAL_S):
-    """
-    Query ADSB.lol military feed with per-process rate limiting.
-    If called too soon, returns the last successful cached response.
-    """
-    if not hasattr(get_adsb_mil_data, "_last_request_time"):
-        get_adsb_mil_data._last_request_time = 0.0
-    if not hasattr(get_adsb_mil_data, "_last_data"):
-        get_adsb_mil_data._last_data = None
-    if not hasattr(get_adsb_mil_data, "_last_error_log_time"):
-        get_adsb_mil_data._last_error_log_time = 0.0
-
-    now = time.time()
-    min_interval_s = max(1, int(min_interval))
-    if now - float(get_adsb_mil_data._last_request_time) < float(min_interval_s):
-        return get_adsb_mil_data._last_data
-
-    data = _http_get_json("https://api.adsb.lol/v2/mil", timeout=10.0)
-    if isinstance(data, dict):
-        get_adsb_mil_data._last_request_time = now
-        get_adsb_mil_data._last_data = data
-        return data
-    if (now - float(get_adsb_mil_data._last_error_log_time)) >= 30.0:
-        print("ADSB warning: ADSB.lol /v2/mil request/parse failed (using last cached data)")
-        get_adsb_mil_data._last_error_log_time = now
-    return get_adsb_mil_data._last_data
-
-
-def _adsb_aircraft_count(payload: object) -> int:
-    if not isinstance(payload, dict):
-        return 0
-    ac = payload.get("ac")
-    if isinstance(ac, list):
-        return len(ac)
-    nested = payload.get("aircraft")
-    if isinstance(nested, list):
-        return len(nested)
-    return 0
-
+from adsb_runtime import (
+    _adsb_aircraft_count,
+    _http_get_json,
+    _safe_float_or_none,
+    get_adsb_data,
+    get_adsb_mil_data,
+    get_general_geo_area_from_ip,
+)
 
 def _build_default_stores_config() -> dict:
     weapons = {
@@ -3032,6 +2783,7 @@ class VdedState:
     active: bool = False
     name: Optional[str] = None
     instance: Optional[object] = None
+    source_format_name: Optional[str] = None
 
 @dataclass
 class VdedZone:
@@ -3050,15 +2802,6 @@ class PortalFormats:
     primary: object
     subs: List[Optional[object]]
     error: bool = False
-
-
-def _sanitize_pmd_id(value: object) -> str:
-    raw = str(value).strip()
-    if raw == "":
-        return ""
-    cleaned = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in raw)
-    cleaned = cleaned.strip("._-")
-    return cleaned[:64]
 
 
 def _safe_read_json(path: Path, fallback: Optional[dict] = None) -> dict:
@@ -3080,1088 +2823,6 @@ def _safe_write_json(path: Path, payload: object) -> bool:
         return True
     except Exception:
         return False
-
-
-def _dist_normalize_public_key(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if re.fullmatch(r"[0-9a-f]{64}", text):
-        return text
-    match = re.search(r"[0-9a-fA-F]{64}", str(value or ""))
-    if match is None:
-        return ""
-    out = str(match.group(0)).strip().lower()
-    if re.fullmatch(r"[0-9a-f]{64}", out):
-        return out
-    return ""
-
-
-def _dist_sanitize_distributor(value: object, max_len: int = 40) -> str:
-    raw = str(value or "")
-    filtered = "".join(ch for ch in raw if 32 <= ord(ch) <= 126)
-    return filtered.strip()[: max(1, int(max_len))]
-
-
-def _dist_normalize_user_filename(value: object) -> str:
-    raw = str(value or "").strip()
-    if raw == "":
-        return ""
-    return Path(raw).name
-
-
-def _dist_parse_bool(value: object, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return bool(default)
-    if isinstance(value, (int, float)):
-        try:
-            return bool(int(value))
-        except Exception:
-            return bool(default)
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off", ""}:
-        return False
-    return bool(default)
-
-
-def _dist_default_metadata() -> Dict[str, object]:
-    return {
-        "schema": DIST_METADATA_VERSION,
-        "require_user_key": True,
-        "allowed_public_keys": [],
-        "target_user_file": "",
-        "distributor": "",
-        "lock_distributor": False,
-        "users_removed": False,
-        "embedded_users": {},
-    }
-
-
-def _dist_normalize_metadata(value: object) -> Dict[str, object]:
-    out = _dist_default_metadata()
-    if isinstance(value, dict):
-        try:
-            out["schema"] = int(value.get("schema", DIST_METADATA_VERSION))
-        except Exception:
-            out["schema"] = DIST_METADATA_VERSION
-        out["require_user_key"] = _dist_parse_bool(value.get("require_user_key", True), default=True)
-        keys_raw = value.get("allowed_public_keys", [])
-        keys: List[str] = []
-        if isinstance(keys_raw, list):
-            for item in keys_raw:
-                norm = _dist_normalize_public_key(item)
-                if norm != "" and norm not in keys:
-                    keys.append(norm)
-        single = _dist_normalize_public_key(value.get("allowed_public_key", ""))
-        if single != "" and single not in keys:
-            keys.append(single)
-        out["allowed_public_keys"] = keys
-        out["target_user_file"] = _dist_normalize_user_filename(value.get("target_user_file", ""))
-        out["distributor"] = _dist_sanitize_distributor(value.get("distributor", ""))
-        out["lock_distributor"] = _dist_parse_bool(value.get("lock_distributor", False), default=False)
-        out["users_removed"] = _dist_parse_bool(value.get("users_removed", False), default=False)
-        embedded: Dict[str, str] = {}
-        emb_raw = value.get("embedded_users", value.get("users", {}))
-        if isinstance(emb_raw, dict):
-            for raw_name, raw_val in emb_raw.items():
-                name = _dist_normalize_user_filename(raw_name)
-                if name == "":
-                    continue
-                key = ""
-                if isinstance(raw_val, dict):
-                    key = _dist_normalize_public_key(raw_val.get("public_key", ""))
-                else:
-                    key = _dist_normalize_public_key(raw_val)
-                if key != "":
-                    embedded[name] = key
-        elif isinstance(emb_raw, list):
-            for item in emb_raw:
-                if not isinstance(item, dict):
-                    continue
-                name = _dist_normalize_user_filename(
-                    item.get("name", item.get("file", item.get("filename", "")))
-                )
-                key = _dist_normalize_public_key(item.get("public_key", ""))
-                if name != "" and key != "":
-                    embedded[name] = key
-        out["embedded_users"] = embedded
-    return out
-
-
-def _dist_sidecar_path(exe_path: Path) -> Path:
-    return exe_path.with_suffix(exe_path.suffix + ".dist.json")
-
-
-def _dist_get_secrets() -> Optional[DistSecretMaterial]:
-    return _DIST_SECRETS
-
-
-def _dist_strip_embedded_metadata_blob(data: bytes) -> bytes:
-    start = data.rfind(DIST_METADATA_BEGIN)
-    if start < 0:
-        return data
-    end = data.find(DIST_METADATA_END, start + len(DIST_METADATA_BEGIN))
-    if end < 0:
-        return data
-    return data[:start] + data[end + len(DIST_METADATA_END) :]
-
-
-def _dist_metadata_cipher_key() -> bytes:
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is None:
-        return b""
-    return hashlib.sha256(str(secrets_obj.metadata_seal_key).encode("utf-8", errors="ignore")).digest()
-
-
-def _dist_metadata_rsa_modulus_int() -> int:
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is not None:
-        try:
-            return int(str(secrets_obj.metadata_rsa_n_hex).strip(), 16)
-        except Exception:
-            pass
-    try:
-        return int(str(DIST_METADATA_RSA_N_HEX_PUBLIC).strip(), 16)
-    except Exception:
-        return 0
-
-
-def _dist_metadata_rsa_private_int() -> int:
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is None:
-        return 0
-    try:
-        return int(str(secrets_obj.metadata_rsa_d_hex).strip(), 16)
-    except Exception:
-        return 0
-
-
-def _dist_metadata_rsa_size_bytes() -> int:
-    n = _dist_metadata_rsa_modulus_int()
-    if int(n) <= 0:
-        return 0
-    return max(1, (int(n).bit_length() + 7) // 8)
-
-
-def _dist_metadata_signature_message(nonce: bytes, cipher: bytes) -> bytes:
-    return b"F35_DIST_META_V3|" + bytes(nonce) + b"|" + bytes(cipher)
-
-
-def _dist_metadata_sign_signature(nonce: bytes, cipher: bytes) -> str:
-    n = _dist_metadata_rsa_modulus_int()
-    d = _dist_metadata_rsa_private_int()
-    size = _dist_metadata_rsa_size_bytes()
-    if n <= 0 or d <= 0 or size <= 0:
-        return ""
-    digest = hashlib.sha256(_dist_metadata_signature_message(nonce, cipher)).digest()
-    digest_int = int.from_bytes(digest, "big")
-    sig_int = pow(digest_int, d, n)
-    sig_bytes = int(sig_int).to_bytes(size, "big")
-    return base64.b64encode(sig_bytes).decode("ascii")
-
-
-def _dist_metadata_verify_signature(nonce: bytes, cipher: bytes, signature_b64: str) -> bool:
-    try:
-        signature = base64.b64decode(str(signature_b64).strip(), validate=True)
-    except Exception:
-        return False
-    n = _dist_metadata_rsa_modulus_int()
-    secrets_obj = _dist_get_secrets()
-    try:
-        e = int(secrets_obj.metadata_rsa_e) if secrets_obj is not None else int(DIST_METADATA_RSA_E_PUBLIC)
-    except Exception:
-        return False
-    size = _dist_metadata_rsa_size_bytes()
-    if n <= 0 or size <= 0:
-        return False
-    if len(signature) != size:
-        return False
-    sig_int = int.from_bytes(signature, "big")
-    if sig_int <= 0 or sig_int >= n:
-        return False
-    recovered = pow(sig_int, e, n)
-    digest = hashlib.sha256(_dist_metadata_signature_message(nonce, cipher)).digest()
-    digest_int = int.from_bytes(digest, "big")
-    return int(recovered) == int(digest_int)
-
-
-def _dist_metadata_plain_signature_message(plain: bytes) -> bytes:
-    return b"F35_DIST_META_V4|" + bytes(plain)
-
-
-def _dist_metadata_sign_plain_payload(plain: bytes) -> str:
-    n = _dist_metadata_rsa_modulus_int()
-    d = _dist_metadata_rsa_private_int()
-    size = _dist_metadata_rsa_size_bytes()
-    if n <= 0 or d <= 0 or size <= 0:
-        return ""
-    digest = hashlib.sha256(_dist_metadata_plain_signature_message(plain)).digest()
-    digest_int = int.from_bytes(digest, "big")
-    sig_int = pow(digest_int, d, n)
-    sig_bytes = int(sig_int).to_bytes(size, "big")
-    return base64.b64encode(sig_bytes).decode("ascii")
-
-
-def _dist_metadata_verify_plain_payload(plain: bytes, signature_b64: str) -> bool:
-    try:
-        signature = base64.b64decode(str(signature_b64).strip(), validate=True)
-    except Exception:
-        return False
-    n = _dist_metadata_rsa_modulus_int()
-    try:
-        secrets_obj = _dist_get_secrets()
-        e = int(secrets_obj.metadata_rsa_e) if secrets_obj is not None else int(DIST_METADATA_RSA_E_PUBLIC)
-    except Exception:
-        return False
-    size = _dist_metadata_rsa_size_bytes()
-    if n <= 0 or size <= 0:
-        return False
-    if len(signature) != size:
-        return False
-    sig_int = int.from_bytes(signature, "big")
-    if sig_int <= 0 or sig_int >= n:
-        return False
-    recovered = pow(sig_int, e, n)
-    digest = hashlib.sha256(_dist_metadata_plain_signature_message(plain)).digest()
-    digest_int = int.from_bytes(digest, "big")
-    return int(recovered) == int(digest_int)
-
-
-def _dist_xor_stream(data: bytes, key: bytes, nonce: bytes) -> bytes:
-    if len(data) <= 0:
-        return b""
-    out = bytearray()
-    counter = 0
-    while len(out) < len(data):
-        block = hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
-        out.extend(block)
-        counter += 1
-    stream = bytes(out[: len(data)])
-    return bytes(a ^ b for a, b in zip(data, stream))
-
-
-def _dist_encode_metadata_payload(metadata: Dict[str, object]) -> bytes:
-    normalized = _dist_normalize_metadata(metadata)
-    plain = json.dumps(
-        normalized,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("utf-8")
-    signature = _dist_metadata_sign_plain_payload(plain)
-    if signature == "":
-        raise RuntimeError("DIST secrets unavailable: metadata signing key missing.")
-    envelope = {
-        "seal_v": DIST_METADATA_SEAL_VERSION,
-        "data": base64.b64encode(plain).decode("ascii"),
-        "sig_alg": DIST_METADATA_SIG_ALG,
-        "sig": signature,
-        # Compatibility mirrors for older builds that only parse plain JSON.
-        # New builds ignore these and use the sealed payload above.
-        "schema": int(normalized.get("schema", DIST_METADATA_VERSION)),
-        "require_user_key": bool(normalized.get("require_user_key", True)),
-        "users_removed": bool(normalized.get("users_removed", False)),
-    }
-    return json.dumps(envelope, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-
-
-def _dist_decode_metadata_payload(payload: bytes) -> Tuple[Dict[str, object], str]:
-    try:
-        parsed = json.loads(payload.decode("utf-8", errors="ignore"))
-    except Exception:
-        return {}, "DIST metadata is not valid JSON."
-    if not isinstance(parsed, dict):
-        return {}, "DIST metadata must be a JSON object."
-
-    # Sealed envelope format.
-    if "seal_v" in parsed or "nonce" in parsed or "data" in parsed or "tag" in parsed or "sig" in parsed:
-        try:
-            seal_v = int(parsed.get("seal_v", 0))
-        except Exception:
-            seal_v = 0
-        data_b64 = str(parsed.get("data", "")).strip()
-        if data_b64 == "":
-            return {}, "DIST metadata seal fields are invalid."
-
-        if seal_v == 2:
-            nonce_b64 = str(parsed.get("nonce", "")).strip()
-            if nonce_b64 == "":
-                return {}, "DIST metadata seal fields are invalid."
-            try:
-                nonce = base64.b64decode(nonce_b64, validate=True)
-                cipher = base64.b64decode(data_b64, validate=True)
-            except Exception:
-                return {}, "DIST metadata seal payload is not valid base64."
-            if len(nonce) != 16:
-                return {}, "DIST metadata nonce size is invalid."
-            # Backward compatibility: v2 HMAC seal.
-            tag = str(parsed.get("tag", "")).strip().lower()
-            if not re.fullmatch(r"[0-9a-f]{64}", tag):
-                return {}, "DIST metadata v2 tag is invalid."
-            key_v2 = _dist_metadata_cipher_key()
-            if len(key_v2) <= 0:
-                return {}, "DIST secrets unavailable for v2 metadata."
-            expected_tag = hmac.new(key_v2, nonce + cipher, hashlib.sha256).hexdigest().lower()
-            if not hmac.compare_digest(expected_tag, tag):
-                return {}, "DIST metadata integrity check failed."
-            plain = _dist_xor_stream(cipher, key_v2, nonce)
-        elif seal_v == 3:
-            nonce_b64 = str(parsed.get("nonce", "")).strip()
-            if nonce_b64 == "":
-                return {}, "DIST metadata seal fields are invalid."
-            try:
-                nonce = base64.b64decode(nonce_b64, validate=True)
-                cipher = base64.b64decode(data_b64, validate=True)
-            except Exception:
-                return {}, "DIST metadata seal payload is not valid base64."
-            if len(nonce) != 16:
-                return {}, "DIST metadata nonce size is invalid."
-            sig_alg = str(parsed.get("sig_alg", "")).strip().upper()
-            signature_b64 = str(parsed.get("sig", "")).strip()
-            if sig_alg != str(DIST_METADATA_SIG_ALG).upper() or signature_b64 == "":
-                return {}, "DIST metadata signature fields are invalid."
-            if not _dist_metadata_verify_signature(nonce, cipher, signature_b64):
-                return {}, "DIST metadata signature verification failed."
-            key_v3 = _dist_metadata_cipher_key()
-            if len(key_v3) <= 0:
-                return {}, "Legacy v3 metadata requires migration. Re-save EXE metadata with updated User Editor."
-            plain = _dist_xor_stream(cipher, key_v3, nonce)
-        elif seal_v == DIST_METADATA_SEAL_VERSION:
-            sig_alg = str(parsed.get("sig_alg", "")).strip().upper()
-            signature_b64 = str(parsed.get("sig", "")).strip()
-            if sig_alg != str(DIST_METADATA_SIG_ALG).upper() or signature_b64 == "":
-                return {}, "DIST metadata signature fields are invalid."
-            try:
-                plain = base64.b64decode(data_b64, validate=True)
-            except Exception:
-                return {}, "DIST metadata seal payload is not valid base64."
-            if not _dist_metadata_verify_plain_payload(plain, signature_b64):
-                # Compatibility fallback:
-                # If metadata is explicitly configured with user requirement OFF,
-                # allow launch even if signature key material differs across machines.
-                # Keep secure behavior for protected distributions (REQ ON).
-                fallback_candidate: Dict[str, object] = {}
-                try:
-                    decoded_plain = json.loads(plain.decode("utf-8", errors="ignore"))
-                    if isinstance(decoded_plain, dict):
-                        fallback_candidate = _dist_normalize_metadata(decoded_plain)
-                except Exception:
-                    fallback_candidate = {}
-                if not isinstance(fallback_candidate, dict) or len(fallback_candidate) <= 0:
-                    fallback_candidate = _dist_default_metadata()
-                    fallback_candidate["require_user_key"] = _dist_parse_bool(
-                        parsed.get("require_user_key", True),
-                        default=True,
-                    )
-                    fallback_candidate["users_removed"] = _dist_parse_bool(
-                        parsed.get("users_removed", False),
-                        default=False,
-                    )
-                if not bool(fallback_candidate.get("require_user_key", True)):
-                    # Force non-restrictive fallback fields for REQ OFF mode.
-                    fallback_candidate["allowed_public_keys"] = []
-                    fallback_candidate["target_user_file"] = ""
-                    fallback_candidate["embedded_users"] = {}
-                    fallback_candidate["users_removed"] = True
-                    return fallback_candidate, ""
-                return {}, "DIST metadata signature verification failed."
-        else:
-            return {}, "DIST metadata seal version is unsupported."
-
-        try:
-            decoded = json.loads(plain.decode("utf-8", errors="ignore"))
-        except Exception:
-            return {}, "DIST metadata payload failed to decode."
-        if not isinstance(decoded, dict):
-            return {}, "DIST metadata payload is invalid."
-        return decoded, ""
-
-    # Legacy plain JSON metadata compatibility path.
-    return parsed, ""
-
-
-def _dist_read_embedded_metadata(exe_path: Path) -> Dict[str, object]:
-    try:
-        raw = exe_path.read_bytes()
-    except Exception:
-        return {}
-    start = raw.rfind(DIST_METADATA_BEGIN)
-    if start < 0:
-        return {}
-    end = raw.find(DIST_METADATA_END, start + len(DIST_METADATA_BEGIN))
-    if end < 0:
-        return {}
-    payload = raw[start + len(DIST_METADATA_BEGIN) : end]
-    parsed, error_text = _dist_decode_metadata_payload(payload)
-    if error_text != "":
-        return {"__integrity_error": error_text}
-    if isinstance(parsed, dict):
-        return parsed
-    return {}
-
-
-def _dist_has_embedded_users(exe_path: Path) -> bool:
-    try:
-        meta = _dist_normalize_metadata(_dist_read_embedded_metadata(exe_path))
-    except Exception:
-        return False
-    users_raw = meta.get("embedded_users", {})
-    return isinstance(users_raw, dict) and len(users_raw) > 0
-
-
-def _dist_write_embedded_metadata(exe_path: Path, metadata: Dict[str, object]) -> bool:
-    try:
-        raw = exe_path.read_bytes()
-    except Exception:
-        return False
-    try:
-        clean = _dist_strip_embedded_metadata_blob(raw)
-        payload = _dist_encode_metadata_payload(metadata)
-        exe_path.write_bytes(clean + DIST_METADATA_BEGIN + payload + DIST_METADATA_END)
-        return True
-    except Exception:
-        return False
-
-
-def _dist_read_sidecar_metadata(exe_path: Path) -> Dict[str, object]:
-    sidecar = _dist_sidecar_path(exe_path)
-    return _safe_read_json(sidecar, {})
-
-
-def _dist_write_sidecar_metadata(exe_path: Path, metadata: Dict[str, object]) -> bool:
-    sidecar = _dist_sidecar_path(exe_path)
-    return _safe_write_json(sidecar, _dist_normalize_metadata(metadata))
-
-
-def _dist_load_effective_metadata(exe_path: Path) -> Dict[str, object]:
-    embedded = _dist_read_embedded_metadata(exe_path)
-    integrity_error = ""
-    if isinstance(embedded, dict):
-        integrity_error = str(embedded.get("__integrity_error", "")).strip()
-    if is_frozen():
-        if isinstance(embedded, dict):
-            normalized = _dist_normalize_metadata(embedded)
-        else:
-            normalized = _dist_default_metadata()
-        if integrity_error != "":
-            normalized["__integrity_error"] = integrity_error
-        return normalized
-    sidecar = _dist_read_sidecar_metadata(exe_path)
-    merged: Dict[str, object] = {}
-    if isinstance(embedded, dict):
-        merged.update(embedded)
-    if isinstance(sidecar, dict):
-        merged.update(sidecar)
-    normalized = _dist_normalize_metadata(merged)
-    if integrity_error != "":
-        normalized["__integrity_error"] = integrity_error
-    return normalized
-
-
-def _run_powershell_capture(command: str, timeout_s: float = 2.5) -> str:
-    if os.name != "nt":
-        return ""
-    try:
-        run_kwargs = {}
-        try:
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 0
-            run_kwargs["startupinfo"] = startup
-        except Exception:
-            pass
-        try:
-            run_kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except Exception:
-            pass
-        completed = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", str(command)],
-            capture_output=True,
-            text=True,
-            timeout=max(1.0, float(timeout_s)),
-            check=False,
-            **run_kwargs,
-        )
-    except Exception:
-        return ""
-    if completed.returncode != 0 and str(completed.stdout).strip() == "":
-        return ""
-    return str(completed.stdout or "").strip()
-
-
-def _firewall_helper_apply_rules(exe_path: str, relay_ip: str, relay_port: int) -> Tuple[bool, str]:
-    if os.name != "nt":
-        return False, "Windows only."
-    exe_txt = str(exe_path or "").strip()
-    ip_txt = str(relay_ip or "").strip() or "104.248.63.183"
-    try:
-        port_num = int(relay_port)
-    except Exception:
-        port_num = 27015
-    if port_num <= 0:
-        port_num = 27015
-    if exe_txt == "":
-        return False, "Missing EXE path."
-    if not Path(exe_txt).exists():
-        return False, "EXE path does not exist."
-    esc = lambda s: str(s).replace("'", "''")
-    ps_script = (
-        "$ErrorActionPreference='Stop'; "
-        f"$exe='{esc(exe_txt)}'; "
-        f"$rip='{esc(ip_txt)}'; "
-        f"$rport={int(port_num)}; "
-        "$in='F35 PCD Relay UDP In'; "
-        "$out='F35 PCD Relay UDP Out'; "
-        "Get-NetFirewallRule -DisplayName $in -ErrorAction SilentlyContinue | Remove-NetFirewallRule -Confirm:$false -ErrorAction SilentlyContinue; "
-        "Get-NetFirewallRule -DisplayName $out -ErrorAction SilentlyContinue | Remove-NetFirewallRule -Confirm:$false -ErrorAction SilentlyContinue; "
-        "New-NetFirewallRule -DisplayName $in -Direction Inbound -Action Allow -Program $exe -Protocol UDP -RemoteAddress $rip -RemotePort $rport -Profile Any | Out-Null; "
-        "New-NetFirewallRule -DisplayName $out -Direction Outbound -Action Allow -Program $exe -Protocol UDP -RemoteAddress $rip -RemotePort $rport -Profile Any | Out-Null; "
-        "Write-Output 'OK';"
-    )
-    out = _run_powershell_capture(ps_script, timeout_s=8.0)
-    if "OK" in str(out):
-        return True, "Firewall rules installed."
-    return False, "Firewall rule installation failed."
-
-
-def _firewall_helper_mode_from_argv(argv: Optional[List[str]] = None) -> Optional[int]:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if "--fw-helper" not in args:
-        return None
-    if os.name != "nt":
-        return 1
-    exe_path = ""
-    relay_ip = "104.248.63.183"
-    relay_port = 27015
-    i = 0
-    while i < len(args):
-        tok = str(args[i]).strip().lower()
-        if tok == "--fw-exe" and i + 1 < len(args):
-            exe_path = str(args[i + 1])
-            i += 2
-            continue
-        if tok == "--fw-ip" and i + 1 < len(args):
-            relay_ip = str(args[i + 1]).strip() or relay_ip
-            i += 2
-            continue
-        if tok == "--fw-port" and i + 1 < len(args):
-            try:
-                relay_port = int(str(args[i + 1]).strip())
-            except Exception:
-                relay_port = 27015
-            i += 2
-            continue
-        i += 1
-    if exe_path == "":
-        exe_path = str(Path(sys.executable).resolve())
-    ok, msg = _firewall_helper_apply_rules(exe_path, relay_ip, relay_port)
-    try:
-        print(f"[FIREWALL][HELPER] {msg}")
-    except Exception:
-        pass
-    return 0 if ok else 1
-
-
-def _3dworld_worker_mode_from_argv(argv: Optional[List[str]] = None) -> Optional[int]:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if "--3dworld-worker" not in args:
-        return None
-    session_id = ""
-    role = "tflir"
-    i = 0
-    while i < len(args):
-        tok = str(args[i]).strip().lower()
-        if tok == "--session" and i + 1 < len(args):
-            session_id = str(args[i + 1]).strip()
-            i += 2
-            continue
-        if tok == "--role" and i + 1 < len(args):
-            role = str(args[i + 1]).strip().lower() or "tflir"
-            i += 2
-            continue
-        i += 1
-    try:
-        mod = importlib.import_module("3DWorld")
-    except Exception as exc:
-        try:
-            print(f"[3DWORLD][WORKER_DISPATCH] import failed: {exc}")
-        except Exception:
-            pass
-        return 1
-    try:
-        base_cache = Path(getattr(mod, "_BASE_CACHE_DIR"))
-    except Exception:
-        base_cache = Path(__file__).resolve().parent / "CACHE" / "3dworld"
-    try:
-        if role == "das":
-            mod._WORKER_PID_PATH = base_cache / "worker_das_pid.txt"
-            mod._WORKER_LOG_PATH = base_cache / "worker_das.log"
-        else:
-            mod._WORKER_PID_PATH = base_cache / "worker_pid.txt"
-            mod._WORKER_LOG_PATH = base_cache / "worker.log"
-    except Exception:
-        pass
-    if session_id != "":
-        try:
-            mod._SESSION_ID = session_id
-            session_cache = base_cache / str(session_id)
-            mod._CACHE_DIR = session_cache
-            mod._POSE_PATH = session_cache / "pose.json"
-            mod._FRAME_PATH = session_cache / "tflir_frame.png"
-            mod._META_PATH = session_cache / "frame_meta.json"
-            mod._DAS_FRAME_PATH = session_cache / "das_frame.png"
-            mod._DAS_META_PATH = session_cache / "das_frame_meta.json"
-        except Exception:
-            pass
-    try:
-        return int(mod._run_worker())
-    except Exception as exc:
-        try:
-            print(f"[3DWORLD][WORKER_DISPATCH] run failed: {exc}")
-        except Exception:
-            pass
-        return 1
-
-
-def _dist_collect_machine_identity() -> Dict[str, str]:
-    identity: Dict[str, str] = {}
-    tpm_raw = _run_powershell_capture(
-        "$t=Get-CimInstance -Namespace 'root\\cimv2\\Security\\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction SilentlyContinue | "
-        "Select-Object -First 1; if ($null -ne $t) { \"$($t.ManufacturerIdTxt)|$($t.ManufacturerVersion)|$($t.SpecVersion)\" }"
-    )
-    if tpm_raw != "":
-        identity["TPM"] = tpm_raw
-    queries = {
-        "BIOS": "Get-CimInstance -ClassName Win32_BIOS | Select-Object -First 1 -ExpandProperty SerialNumber",
-        "BOARD": "Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -First 1 -ExpandProperty SerialNumber",
-        "CPU": "Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1 -ExpandProperty ProcessorId",
-        "UUID": "Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -First 1 -ExpandProperty UUID",
-        "DISK": "Get-CimInstance -ClassName Win32_DiskDrive | Select-Object -First 1 -ExpandProperty SerialNumber",
-    }
-    for key, query in queries.items():
-        out = _run_powershell_capture(query)
-        if out != "":
-            identity[key] = out.replace("\r", "").replace("\n", "").strip()
-    identity.setdefault("MACHINE", str(os.environ.get("COMPUTERNAME", "")).strip())
-    identity.setdefault("HOST", str(platform.node()).strip())
-    identity.setdefault("MAC", str(uuid.getnode()))
-    identity.setdefault("ARCH", str(platform.machine()).strip())
-    cleaned: Dict[str, str] = {}
-    for key in sorted(identity.keys()):
-        raw_val = str(identity.get(key, "")).strip()
-        if raw_val == "":
-            continue
-        compact = re.sub(r"\s+", "", raw_val)
-        if compact != "":
-            cleaned[key] = compact
-    return cleaned
-
-
-def _dist_generate_machine_keys() -> Dict[str, str]:
-    identity = _dist_collect_machine_identity()
-    source = "TPM" if "TPM" in identity else "HWID"
-    seed = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    fingerprint = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    private_key = hashlib.sha256(f"{DIST_MACHINE_KEY_DOMAIN}|PRIVATE|{fingerprint}".encode("utf-8")).hexdigest()
-    public_key = hashlib.sha256(f"{DIST_MACHINE_KEY_DOMAIN}|PUBLIC|{private_key}".encode("utf-8")).hexdigest()
-    return {
-        "source": source,
-        "fingerprint": fingerprint,
-        "private_key": private_key,
-        "public_key": public_key,
-    }
-
-
-def _dist_read_user_public_key(path: Path) -> str:
-    try:
-        raw = path.read_text(encoding="utf-8-sig")
-    except Exception:
-        return ""
-    try:
-        parsed = json.loads(raw)
-    except Exception:
-        parsed = None
-    if isinstance(parsed, dict):
-        candidate = _dist_normalize_public_key(parsed.get("public_key", ""))
-        if candidate != "":
-            return candidate
-    return _dist_normalize_public_key(raw)
-
-
-def _dist_candidate_users_dirs(include_legacy_paths: bool = False) -> List[Path]:
-    candidates: List[Path] = []
-    frozen_now = bool(is_frozen())
-    if not frozen_now or include_legacy_paths:
-        try:
-            candidates.append(resource_path("USERS"))
-        except Exception:
-            pass
-        candidates.append(USERS_ROOT_PATH)
-    if include_legacy_paths:
-        try:
-            candidates.append(Path(sys.executable).resolve().parent / "USERS")
-        except Exception:
-            pass
-    seen: Set[str] = set()
-    out: List[Path] = []
-    for item in candidates:
-        try:
-            resolved = Path(item).resolve()
-        except Exception:
-            resolved = Path(item)
-        key = str(resolved).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        if resolved.exists() and resolved.is_dir():
-            out.append(resolved)
-    return out
-
-
-def _dist_collect_user_files() -> Dict[str, Path]:
-    if is_frozen():
-        return {}
-    out: Dict[str, Path] = {}
-    seen: Set[str] = set()
-    for users_dir in _dist_candidate_users_dirs():
-        try:
-            files = sorted(users_dir.glob("*.user"), key=lambda p: p.name.lower())
-        except Exception:
-            files = []
-        for user_file in files:
-            name = user_file.name
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out[name] = user_file
-    return out
-
-
-def _dist_collect_user_public_keys_from_dir(users_dir: Path) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    try:
-        files = sorted(users_dir.glob("*.user"), key=lambda p: p.name.lower())
-    except Exception:
-        files = []
-    for user_file in files:
-        try:
-            name = _dist_normalize_user_filename(user_file.name)
-        except Exception:
-            name = ""
-        if name == "" or name in out:
-            continue
-        key = _dist_read_user_public_key(user_file)
-        if key != "":
-            out[name] = key
-    return out
-
-
-def _dist_collect_packaged_user_public_keys() -> Dict[str, str]:
-    if not is_frozen():
-        return {}
-    out: Dict[str, str] = {}
-    candidates: List[Path] = []
-    try:
-        candidates.append(resource_path("USERS"))
-    except Exception:
-        pass
-    try:
-        candidates.append(Path(sys.executable).resolve().parent / "USERS")
-    except Exception:
-        pass
-    seen: Set[str] = set()
-    for cand in candidates:
-        try:
-            resolved = Path(cand).resolve()
-        except Exception:
-            resolved = Path(cand)
-        key = str(resolved).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        if not resolved.exists() or not resolved.is_dir():
-            continue
-        dir_keys = _dist_collect_user_public_keys_from_dir(resolved)
-        for name, pub in dir_keys.items():
-            if name not in out:
-                out[name] = pub
-    return out
-
-
-def _dist_seed_embedded_users_from_packaged(
-    exe_path: Optional[Path],
-    metadata: Dict[str, object],
-) -> Dict[str, object]:
-    normalized = _dist_normalize_metadata(metadata)
-    if not is_frozen() or exe_path is None:
-        return normalized
-    if bool(normalized.get("users_removed", False)):
-        return normalized
-    embedded_raw = normalized.get("embedded_users", {})
-    if isinstance(embedded_raw, dict) and len(embedded_raw) > 0:
-        return normalized
-
-    packaged_keys = _dist_collect_packaged_user_public_keys()
-    if len(packaged_keys) <= 0:
-        return normalized
-
-    updated = _dist_normalize_metadata(normalized)
-    updated["embedded_users"] = dict(packaged_keys)
-
-    allowed_raw = updated.get("allowed_public_keys", [])
-    allowed: List[str] = []
-    if isinstance(allowed_raw, list):
-        for item in allowed_raw:
-            norm = _dist_normalize_public_key(item)
-            if norm != "" and norm not in allowed:
-                allowed.append(norm)
-    if len(allowed) <= 0:
-        target_name = _dist_normalize_user_filename(updated.get("target_user_file", ""))
-        target_key = _dist_normalize_public_key(packaged_keys.get(target_name, ""))
-        if target_key != "":
-            allowed = [target_key]
-        else:
-            for val in packaged_keys.values():
-                norm = _dist_normalize_public_key(val)
-                if norm != "" and norm not in allowed:
-                    allowed.append(norm)
-    updated["allowed_public_keys"] = allowed
-
-    if _dist_write_embedded_metadata(exe_path, updated):
-        try:
-            _dist_sidecar_path(exe_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-        return _dist_normalize_metadata(updated)
-    # If EXE rewrite is blocked (common while running), still return the seeded
-    # metadata for current runtime auth/menu use.
-    return _dist_normalize_metadata(updated)
-
-
-def _dist_collect_user_public_keys(metadata: Optional[Dict[str, object]] = None) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    if isinstance(metadata, dict):
-        normalized = _dist_normalize_metadata(metadata)
-        embedded_raw = normalized.get("embedded_users", {})
-        if isinstance(embedded_raw, dict):
-            for raw_name, raw_key in embedded_raw.items():
-                name = _dist_normalize_user_filename(raw_name)
-                key = _dist_normalize_public_key(raw_key)
-                if name != "" and key != "":
-                    out[name] = key
-    disk_map = _dist_collect_user_files()
-    for name, path in disk_map.items():
-        key = _dist_read_user_public_key(path)
-        if key != "" and name not in out:
-            out[name] = key
-    return out
-
-
-def _dist_allowed_public_keys_from_users(
-    target_user_file: str = "",
-    metadata: Optional[Dict[str, object]] = None,
-) -> List[str]:
-    key_map = _dist_collect_user_public_keys(metadata)
-    allowed: List[str] = []
-    if target_user_file != "":
-        target_l = str(target_user_file).strip().lower()
-        for name, key in key_map.items():
-            if name.strip().lower() != target_l:
-                continue
-            if key != "" and key not in allowed:
-                allowed.append(key)
-            return allowed
-        return allowed
-    for key in key_map.values():
-        if key != "" and key not in allowed:
-            allowed.append(key)
-    return allowed
-
-
-def _dist_authorize_launch(metadata: Dict[str, object]) -> Tuple[bool, str, str]:
-    integrity_error = ""
-    if isinstance(metadata, dict):
-        integrity_error = str(metadata.get("__integrity_error", "")).strip()
-    if integrity_error != "":
-        return False, integrity_error, ""
-    meta = _dist_normalize_metadata(metadata)
-    if not bool(meta.get("require_user_key", True)):
-        return True, "User requirement disabled.", ""
-    machine_keys = _dist_generate_machine_keys()
-    local_public_key = _dist_normalize_public_key(machine_keys.get("public_key", ""))
-    if local_public_key == "":
-        return False, "Unable to generate local public key.", ""
-    allowed: List[str] = []
-    allowed_raw = meta.get("allowed_public_keys", [])
-    if isinstance(allowed_raw, list):
-        for item in allowed_raw:
-            norm = _dist_normalize_public_key(item)
-            if norm != "" and norm not in allowed:
-                allowed.append(norm)
-    target_file = _dist_normalize_user_filename(meta.get("target_user_file", ""))
-    if len(allowed) <= 0:
-        allowed = _dist_allowed_public_keys_from_users(target_file, meta)
-    if len(allowed) <= 0:
-        if target_file != "":
-            return False, f"Configured user file not found: {target_file}", local_public_key
-        return False, "No .user keys are available.", local_public_key
-    if local_public_key in allowed:
-        return True, "Authorized user key match.", local_public_key
-    return False, "No matching user key for this machine.", local_public_key
-
-
-def _dist_send_unauthorized_webhook(distributor: object, reason: object) -> bool:
-    url = str(DIST_WEBHOOK_URL).strip()
-    if url == "":
-        return False
-    message = {
-        "content": "\n".join(
-            [
-                "Unauthorized F-35 simulator launch blocked.",
-                f"Windows User: {os.environ.get('USERNAME', getpass.getuser())}",
-                f"Distributor: {_dist_sanitize_distributor(distributor) or 'UNKNOWN'}",
-                f"Reason: {str(reason or '').strip() or 'unknown'}",
-            ]
-        )[:1800]
-    }
-    payload = json.dumps(message, ensure_ascii=True).encode("utf-8")
-    for timeout_s in (4.0, 8.0):
-        req = urllib_request.Request(
-            url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "F35-PCD/1.0",
-            },
-            method="POST",
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=float(timeout_s)):
-                return True
-        except Exception:
-            continue
-    if os.name == "nt":
-        try:
-            payload_b64 = base64.b64encode(payload).decode("ascii")
-            ps_url = url.replace("'", "''")
-            ps_cmd = (
-                f"$u='{ps_url}';"
-                f"$p='{payload_b64}';"
-                "$j=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($p));"
-                "try {"
-                "Invoke-RestMethod -Method Post -Uri $u -Body $j -ContentType 'application/json' -TimeoutSec 10 | Out-Null;"
-                "'OK'"
-                "} catch { '' }"
-            )
-            if _run_powershell_capture(ps_cmd, timeout_s=12.0).strip().upper() == "OK":
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def _dist_notify_auth_failure(distributor: object, reason: object) -> None:
-    reason_text = str(reason or "").strip() or "unknown"
-    distributor_text = _dist_sanitize_distributor(distributor) or "UNKNOWN"
-    log_path = writable_path("dist_auth_failed.log")
-    webhook_ok = _dist_send_unauthorized_webhook(distributor_text, reason_text)
-    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    details = (
-        f"[{now_utc}] DIST AUTH FAILED\n"
-        f"Reason: {reason_text}\n"
-        f"Distributor: {distributor_text}\n"
-        f"Windows User: {os.environ.get('USERNAME', getpass.getuser())}\n"
-        f"Webhook Sent: {webhook_ok}\n"
-    )
-    try:
-        log_path.write_text(details, encoding="utf-8")
-    except Exception:
-        pass
-    print(details.strip())
-    if bool(is_frozen()) and os.name == "nt":
-        webhook_hint = (
-            "Webhook sent."
-            if webhook_ok
-            else (
-                "Webhook not configured (set F35_DIST_WEBHOOK_URL)."
-                if str(DIST_WEBHOOK_URL).strip() == ""
-                else "Webhook send failed."
-            )
-        )
-        msg = (
-            "F-35 PCD launch blocked by authorization.\n\n"
-            f"Reason: {reason_text}\n"
-            f"Distributor: {distributor_text}\n"
-            f"{webhook_hint}\n"
-            f"Log: {log_path}"
-        )
-        try:
-            ctypes.windll.user32.MessageBoxW(None, msg, "F-35 PCD - Authorization Failed", 0x10)
-        except Exception:
-            pass
-
-
-def _dist_try_remove_users_folder() -> None:
-    if not is_frozen():
-        return
-    for users_dir in _dist_candidate_users_dirs(include_legacy_paths=True):
-        try:
-            shutil.rmtree(users_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-
-def _dist_restart_auth_bypass_signature(exe_path: Path, ts_s: int) -> str:
-    try:
-        resolved = str(exe_path.resolve()).strip().lower()
-    except Exception:
-        resolved = str(exe_path).strip().lower()
-    key = _dist_metadata_cipher_key()
-    if len(key) <= 0:
-        return ""
-    msg = f"{resolved}|{int(ts_s)}".encode("utf-8", errors="ignore")
-    return hmac.new(key, msg, hashlib.sha256).hexdigest()
-
-
-def _dist_apply_restart_auth_bypass_env(base_env: Dict[str, str], exe_path: Path) -> Dict[str, str]:
-    env_out = dict(base_env)
-    ts_s = int(time.time())
-    sig = _dist_restart_auth_bypass_signature(exe_path, ts_s)
-    if sig == "":
-        return env_out
-    env_out[DIST_AUTH_BYPASS_TS_ENV] = str(ts_s)
-    env_out[DIST_AUTH_BYPASS_SIG_ENV] = sig
-    return env_out
-
-
-def _dist_consume_restart_auth_bypass(exe_path: Path) -> bool:
-    ts_raw = str(os.environ.pop(DIST_AUTH_BYPASS_TS_ENV, "")).strip()
-    sig_raw = str(os.environ.pop(DIST_AUTH_BYPASS_SIG_ENV, "")).strip().lower()
-    if ts_raw == "" or sig_raw == "":
-        return False
-    try:
-        ts_s = int(ts_raw)
-    except Exception:
-        return False
-    now_s = int(time.time())
-    secrets_obj = _dist_get_secrets()
-    window_s = int(secrets_obj.auth_bypass_window_s) if secrets_obj is not None else int(DIST_AUTH_BYPASS_WINDOW_DEFAULT_S)
-    if abs(now_s - ts_s) > max(1, window_s):
-        return False
-    expected_sig = _dist_restart_auth_bypass_signature(exe_path, ts_s).lower()
-    if expected_sig == "":
-        return False
-    return hmac.compare_digest(sig_raw, expected_sig)
-
-
-def _dist_admin_credential_matches(expected_hash: object, value: object) -> bool:
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is None:
-        return False
-    return _dist_verify_credential_hash(expected_hash, secrets_obj.admin_cred_salt, value)
 
 def _seclvl_has_dist_credentials(seclvl_state: Dict[str, object]) -> bool:
     secrets_obj = _dist_get_secrets()
@@ -4767,47 +3428,6 @@ def _varipass_post(payload: Dict[str, object], timeout_s: float = 6.0) -> Tuple[
         return None, str(exc)
 
 
-def _pmd_wrap_text(text: object, max_len: int, max_lines: int) -> List[str]:
-    raw = str(text).strip()
-    if raw == "":
-        return [""]
-    wrapped = textwrap.wrap(raw, width=max(1, int(max_len)), break_long_words=True, break_on_hyphens=False)
-    if len(wrapped) <= max_lines:
-        return wrapped
-    out = list(wrapped[: max(1, int(max_lines))])
-    if len(out[-1]) >= 1:
-        out[-1] = out[-1][:-1] + "."
-    return out
-
-
-def _pmd_extract_archive(archive_path: Path, target_dir: Path) -> bool:
-    if not archive_path.exists():
-        return False
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        return False
-    try:
-        with zipfile.ZipFile(str(archive_path), "r") as zf:
-            base = target_dir.resolve()
-            for info in zf.infolist():
-                member = str(info.filename).replace("\\", "/")
-                if member.startswith("/") or ".." in Path(member).parts:
-                    continue
-                out_path = (base / member).resolve()
-                if not str(out_path).startswith(str(base)):
-                    continue
-                if info.is_dir():
-                    out_path.mkdir(parents=True, exist_ok=True)
-                    continue
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info, "r") as src, open(out_path, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-        return True
-    except Exception:
-        return False
-
-
 def _faa_airac_date_token(dt: datetime) -> str:
     month = FAA_AIRAC_MONTH_ABBR[max(0, min(11, int(dt.month) - 1))]
     return f"{int(dt.day):02d}_{month}_{int(dt.year):04d}"
@@ -5341,3181 +3961,12 @@ def draw_loading_half(
     screen.blit(loading, text_rect)
 
 
-_PANEL_IMAGE_CACHE: Dict[str, Optional[pygame.Surface]] = {}
-_PANEL_PAGE_CACHE: Optional[List[List[str]]] = None
-_PANEL_BUTTON_IMAGE_CACHE: Dict[str, Optional[pygame.Surface]] = {}
-_PANEL_BUTTON_BBOX_CACHE: Dict[str, Optional[pygame.Rect]] = {}
-_PANEL_BUTTON_ROT_CW90_CACHE: Dict[str, pygame.Surface] = {}
-_PANEL_RUNTIME_BUTTON_HITS: List[Dict[str, object]] = []
-_PANEL_ACTIVE_HOLDS: Dict[int, Optional[Tuple[str, str]]] = {1: None, 3: None}
-_PANEL_ACTIVE_DIAL_DRAG: Optional[Dict[str, object]] = None
-_PANEL_TEXT_LITES_A1_ON: bool = False
-_PANEL_TEXT_LITES_B1_BRT: int = 0
-_PANEL_TEXT_CACHE_SIG: Optional[Tuple[bool, int]] = None
-CANOPY_ACTUATOR_TRAVEL_MS = 10000
-IPP_START_HOLD_REQUIRED_MS = 3000
-VS_BIT_DURATION_MS = 20000
-VS_BIT_THROTTLE_UP_MS = 1000
-VS_BIT_THROTTLE_DOWN_MS = 1000
-FLIGHT_CONTROL_MAX_DEG = 20.0
-# Editable default user flight-control movement speed.
-FLIGHT_CONTROL_MOVE_RATE_DPS = 40.0
-VS_BIT_FLIGHT_CONTROL_RATE_SCALE = 0.50
-VS_BIT_FCS_STEP_DELAY_MS = 1000
-VS_BIT_IDLE_STABLE_REQUIRED_MS = 15000
-VS_BIT_FCS_TIMEOUT_GRACE_MS = 5000
-VS_BIT_CONTROL_ABORT_DEADZONE = 0.18
-VS_BIT_THROTTLE_ABORT_DELTA = 1.50
-FCS_SYMBOL_MAX_OFFSET_IN = 0.5
-RUDDER_TRIM_RATE_IN_PER_SEC = 0.25
-_FLIGHT_CTRL_MANUAL_KEYS = {
-    "elev_up": (pygame.K_w,),
-    "elev_down": (pygame.K_s,),
-    "ail_left": (pygame.K_a,),
-    "ail_right": (pygame.K_d,),
-    "rud_left": (pygame.K_q,),
-    "rud_right": (pygame.K_e,),
-}
-FLIGHT_KEYBINDS_SETTINGS_KEY = "flight_keybinds"
-HOTAS_BINDINGS_SETTINGS_KEY = "hotas_bindings"
-PMD_KEYBIND_ACTION_ORDER: List[str] = [
-    "elev_up",
-    "elev_down",
-    "ail_left",
-    "ail_right",
-    "rud_left",
-    "rud_right",
-    "czoom_minus",
-    "pan_left",
-    "pan_up",
-    "pan_down",
-    "czoom_plus",
-    "pan_right",
-    "rec_cap",
-    "strt_rec",
-    "cap_area",
-    "restart",
-    "ful_scrn",
-    "throt_plus",
-    "throt_minus",
-    "com_a",
-    "com_b",
-    "com_c",
-    "tx",
-    "poi_plus",
-    "poi_minus",
-    "poi_lt",
-    "poi_up",
-    "poi_dn",
-    "poi_rt",
-    "engine_run",
-    "gun_trigger",
-    "pickle",
-    "com_mute",
-    "brake",
-    "ldg_gear",
-    "wpn_sel",
-    "toi",
-]
-PMD_KEYBIND_ACTION_LABELS: Dict[str, str] = {
-    "elev_up": "ELEV UP",
-    "elev_down": "ELEV DN",
-    "ail_left": "AIL LEFT",
-    "ail_right": "AIL RT",
-    "rud_left": "RUD LEFT",
-    "rud_right": "RUD RT",
-}
-PMD_KEYBIND_DEFAULT_NAMES: Dict[str, str] = {
-    "elev_up": "w",
-    "elev_down": "s",
-    "ail_left": "a",
-    "ail_right": "d",
-    "rud_left": "q",
-    "rud_right": "e",
-    "czoom_minus": "u",
-    "pan_left": "j",
-    "pan_up": "i",
-    "pan_down": "k",
-    "czoom_plus": "o",
-    "pan_right": "l",
-    "rec_cap": "f1",
-    "strt_rec": "f2",
-    "cap_area": "f3",
-    "restart": "f5",
-    "ful_scrn": "f11",
-    "throt_plus": "left shift",
-    "throt_minus": "left ctrl",
-    "com_a": "1",
-    "com_b": "2",
-    "com_c": "3",
-    "tx": "t",
-    "poi_plus": "",
-    "poi_minus": "",
-    "poi_lt": "left",
-    "poi_up": "up",
-    "poi_dn": "down",
-    "poi_rt": "right",
-    "engine_run": "home",
-    "gun_trigger": "space",
-    "pickle": "right alt",
-    "com_mute": "m",
-    "brake": "b",
-    "ldg_gear": "g",
-    "wpn_sel": "",
-    "toi": "\\",
-}
+from cockpit_panel_state import *  # noqa: F401,F403
+configure_runtime_hooks(
+    play_sound_effect_cb=play_sound_effect,
+    get_sound_length_or_default_ms_cb=get_sound_length_or_default_ms,
+)
 
-PMD_KEYBIND_DISPLAY_ALIASES: Dict[str, str] = {
-    "LEFT SHIFT": "L SHIFT",
-    "RIGHT SHIFT": "R SHIFT",
-    "LEFT CTRL": "L CTRL",
-    "RIGHT CTRL": "R CTRL",
-}
-
-
-def _format_keybind_display_text(raw_text: object) -> str:
-    upper = str(raw_text).strip().upper()
-    if upper == "":
-        return ""
-    return str(PMD_KEYBIND_DISPLAY_ALIASES.get(upper, upper))
-
-
-HOTAS_ACTION_ORDER: List[str] = [
-    "pitch",
-    "yaw",
-    "roll",
-    "throttle",
-    "slew_lr",
-    "slew_ud",
-    "slew_up",
-    "slew_down",
-    "slew_left",
-    "slew_right",
-    "zoom_plus",
-    "zoom_minus",
-    "zoom_zero",
-    "pan_lr",
-    "pan_ud",
-    "pan_up",
-    "pan_down",
-    "pan_left",
-    "pan_right",
-    "slew_select",
-    "poi_plus",
-    "poi_minus",
-    "poi_up",
-    "poi_left",
-    "poi_down",
-    "poi_right",
-    "engine_run",
-    "gun_trigger",
-    "pickle",
-    "com_mute",
-    "brake",
-    "ldg_gear",
-    "wpn_sel",
-    "toi",
-    "com_a",
-    "com_b",
-    "com_c",
-    "tx",
-]
-
-HOTAS_ACTION_TITLES: Dict[str, str] = {
-    "pitch": "PITCH",
-    "yaw": "YAW",
-    "roll": "ROLL",
-    "throttle": "THROTTLE",
-    "slew_lr": "SLEW L/R",
-    "slew_ud": "SLEW U/D",
-    "slew_up": "SLEW UP",
-    "slew_down": "SLEW DOWN",
-    "slew_left": "SLEW LEFT",
-    "slew_right": "SLEW RIGHT",
-    "zoom_plus": "ZOOM +",
-    "zoom_minus": "ZOOM -",
-    "zoom_zero": "ZOOM 0",
-    "pan_lr": "PAN L/R",
-    "pan_ud": "PAN U/D",
-    "pan_up": "PAN UP",
-    "pan_down": "PAN DN",
-    "pan_left": "PAN LT",
-    "pan_right": "PAN RT",
-    "slew_select": "SLEW SELECT",
-    "poi_plus": "POI +",
-    "poi_minus": "POI -",
-    "poi_up": "POI UP",
-    "poi_left": "POI LT",
-    "poi_down": "POI DN",
-    "poi_right": "POI RT",
-    "engine_run": "ENGINE RUN",
-    "gun_trigger": "GUN TRIGGER",
-    "pickle": "PICKLE",
-    "com_mute": "COM MUTE",
-    "brake": "BRAKE",
-    "ldg_gear": "LDG GEAR",
-    "wpn_sel": "WPN SEL",
-    "toi": "TOI",
-    "com_a": "COM A",
-    "com_b": "COM B",
-    "com_c": "COM C",
-    "tx": "TX",
-}
-
-HOTAS_ALLOWED_INPUTS: Dict[str, Tuple[str, ...]] = {
-    "pitch": ("axis",),
-    "yaw": ("axis",),
-    "roll": ("axis",),
-    "throttle": ("axis",),
-    "slew_lr": ("axis",),
-    "slew_ud": ("axis",),
-    "slew_up": ("hat", "button"),
-    "slew_down": ("hat", "button"),
-    "slew_left": ("hat", "button"),
-    "slew_right": ("hat", "button"),
-    "zoom_plus": ("hat", "button"),
-    "zoom_minus": ("hat", "button"),
-    "zoom_zero": ("hat", "button"),
-    "pan_lr": ("axis",),
-    "pan_ud": ("axis",),
-    "pan_up": ("hat", "button"),
-    "pan_down": ("hat", "button"),
-    "pan_left": ("hat", "button"),
-    "pan_right": ("hat", "button"),
-    "slew_select": ("hat", "button"),
-    "poi_plus": ("hat", "button"),
-    "poi_minus": ("hat", "button"),
-    "poi_up": ("hat", "button"),
-    "poi_left": ("hat", "button"),
-    "poi_down": ("hat", "button"),
-    "poi_right": ("hat", "button"),
-    "engine_run": ("button",),
-    "gun_trigger": ("button",),
-    "pickle": ("button",),
-    "com_mute": ("hat", "button"),
-    "brake": ("hat", "button"),
-    "ldg_gear": ("button",),
-    "wpn_sel": ("hat", "button"),
-    "toi": ("hat", "button"),
-    "com_a": ("hat", "button"),
-    "com_b": ("hat", "button"),
-    "com_c": ("hat", "button"),
-    "tx": ("hat", "button"),
-}
-INS_GPS_MODE_OPTIONS: List[str] = ["ALIGN", "NAV", "STBY", "COMP", "SEC"]
-INS_GPS_ALIGN_PROFILE_OPTIONS: List[str] = ["NORM", "FINE", "FAST", "STOR"]
-INS_GPS_GPS_AIDING_OPTIONS: List[str] = ["AUTO", "ON", "OFF"]
-INS_GPS_FIX_SOURCE_OPTIONS: List[str] = ["WYPT", "SENS", "MAN", "TACN"]
-INS_GPS_NAV_FILTER_OPTIONS: List[str] = ["NORM", "TIGHT", "SMTH", "HI-DYN"]
-INS_GPS_MAGVAR_MODE_OPTIONS: List[str] = ["AUTO", "MAN"]
-INS_GPS_WYPT_SOURCE_OPTIONS: List[str] = ["PRES GPS", "WYPT", "TACN"]
-_VS_BIT_FCS_SEQUENCE: List[Dict[str, object]] = [
-    {"targets": {"l_elevator": -20.0, "r_elevator": -20.0}, "delay_s": 11.0},
-    {"targets": {"l_elevator": -25.0, "r_elevator": -25.0, "l_rudder": -5.0, "r_rudder": 5.0, "l_aileron": -5.0, "r_aileron": -5.0}, "delay_s": 0.25},
-    {"targets": {"l_elevator": -20.0, "r_elevator": -20.0, "l_rudder": 0.0, "r_rudder": 0.0, "l_aileron": 0.0, "r_aileron": 0.0}, "delay_s": 0.5},
-    {"targets": {"l_elevator": -55.0, "r_elevator": -55.0, "l_rudder": -20.0, "r_rudder": 20.0, "l_aileron": -15.0, "r_aileron": -15.0}, "delay_s": 0.25},
-    {"targets": {"l_elevator": 0.0, "r_elevator": 0.0, "l_rudder": 5.0, "r_rudder": -5.0, "l_aileron": 10.0, "r_aileron": 10.0}, "delay_s": 0.5},
-    {"targets": {"l_elevator": -55.0, "r_elevator": -55.0, "l_rudder": -20.0, "r_rudder": 20.0, "l_aileron": -10.0, "r_aileron": -10.0}, "delay_s": 0.5},
-    {"targets": {"l_elevator": 0.0, "r_elevator": 0.0, "l_rudder": -20.0, "r_rudder": 20.0, "l_aileron": 10.0, "r_aileron": 10.0}, "delay_s": 0.5},
-    {"targets": {"l_elevator": -55.0, "r_elevator": -55.0, "l_rudder": -20.0, "r_rudder": 20.0, "l_aileron": -10.0, "r_aileron": -10.0}, "delay_s": 0.5},
-    {"targets": {"l_elevator": -5.0, "r_elevator": -5.0, "l_rudder": -20.0, "r_rudder": 20.0, "l_aileron": 10.0, "r_aileron": 10.0}, "delay_s": 1.0},
-    {"targets": {"l_elevator": -5.0, "r_elevator": -5.0, "l_rudder": 20.0, "r_rudder": -20.0, "l_aileron": 10.0, "r_aileron": 10.0}, "delay_s": 0.75},
-    {"targets": {"l_elevator": -15.0, "r_elevator": -15.0, "l_rudder": 20.0, "r_rudder": -20.0, "l_aileron": 0.0, "r_aileron": 0.0}, "refuel_open": True, "delay_s": 0.5},
-    {"targets": {"l_elevator": -25.0, "r_elevator": -25.0, "l_rudder": 20.0, "r_rudder": -20.0, "l_aileron": -10.0, "r_aileron": -10.0}, "delay_s": 0.25},
-    {"targets": {"l_elevator": -20.0, "r_elevator": -20.0, "l_rudder": 0.0, "r_rudder": 0.0, "l_aileron": -10.0, "r_aileron": -10.0, "l_lef": 5.0, "r_lef": 5.0}, "delay_s": 1.0},
-    {"targets": {"l_elevator": 20.0, "r_elevator": 20.0, "l_rudder": 0.0, "r_rudder": 0.0, "l_aileron": -10.0, "r_aileron": -10.0, "l_lef": 15.0, "r_lef": 15.0}, "delay_s": 0.25},
-    {"targets": {"l_elevator": -20.0, "r_elevator": -20.0, "l_rudder": 0.0, "r_rudder": 0.0, "l_aileron": 0.0, "r_aileron": 0.0, "l_lef": 0.0, "r_lef": 0.0}, "refuel_open": False, "delay_s": 6.0},
-    {"targets": {"l_elevator": 5.0, "r_elevator": 5.0}, "delay_s": 0.1},
-    {"targets": {"l_elevator": 0.0, "r_elevator": 0.0}, "delay_s": 0.25},
-    {"targets": {"l_elevator": -25.0, "r_elevator": -25.0}, "delay_s": 3.0},
-    {"targets": {"l_elevator": -5.0, "r_elevator": -5.0, "l_rudder": 0.0, "r_rudder": 0.0, "l_aileron": -25.0, "r_aileron": -25.0}},
-]
-VS_BIT_FAILURE_CATALOG: List[Tuple[str, str]] = [
-    ("VS BIT: ABORT-Pilot", "Pilot aborted Vehicle System (VS) Built-in Test (BIT) with the VS BIT Switch."),
-    ("VS BIT: ABORT-HOTAS", "Pilot aborted VS BIT with stick/throttle/grip interference."),
-    ("VS BIT: ABORT-Engine Off", "Pilot aborted VS BIT with engine cutoff."),
-    ("VS BIT: FAIL-FLCS", "VS BIT failed for the Flight Controls System. Maintenance actionable HRCs should be found on the FCS or VSP page."),
-    ("VS BIT: FAIL-Fuel", "VS BIT failed for the Fuel Management System. Maintenance actionable HRCs should be found on the FUEL page."),
-    ("VS BIT: FAIL-FPS", "VS BIT failed for the Fire Protection System. Maintenance actionable HRCs should be found on the FPS page."),
-    ("VS BIT: FAIL-HUA", "VS BIT failed for the hydraulics system. Maintenance actionable HRCs should be found on the HYD page."),
-    ("VS BIT: FAIL-LGS", "VS BIT failed for the Landing and Arresting Gear System. Maintenance actionable HRCs should be found on the GEAR page."),
-    ("VS BIT: FAIL-Prop", "VS BIT failed for the Propulsion System. Maintenance actionable HRCs should be found on the PROP page."),
-    ("VS BIT: FAIL-PTMS", "VS BIT failed for the power & Thermal Management System. Maintenance actionable HRCs should be found on the PTMS page."),
-    ("VS BIT: Ground Interlock", "Ground Interlocks were not met or exceeded during VS BIT (W-ON-W, Throttle more than Idle, Aircraft Not Stationary, etc.)."),
-    ("VS BIT: Parking Brake", "Hydraulics test not complete due to parking brake off."),
-    ("VS BIT: NWS Out of Range", "Nose Wheel Steering (NWS) not in correct forward facing orientation."),
-    ("VS BIT: EHA Temp-HOT", "Electro Hydraulic Actuator (EHA) not tested due to hot actuators."),
-    ("VS BIT: EHA Temp-COLD", "EHA not tested due to cold actuators."),
-    ("VS BIT: Stick Passive", "VS BIT failed due to stick in passive mode."),
-    ("VS BIT: Throttle Passive", "VS BIT failed due to throttle in passive mode."),
-    ("VS BIT: No EHA 270V", "270Vdc not available to Electro Static Actuation System (EHAS) during VS BIT."),
-    ("VS BIT: Fuel-Def Vlv Open", "Refuel/Defuel valve is in incorrect position."),
-    ("VS BIT: No HYD A-HTCA", "Hydraulics-System A not available during VS BIT-Horizontal Tail Centering Actuator (HTCA)."),
-    ("VS BIT: No HYD B-NWS", "Hydraulics-system B not available during VS BIT-NWS."),
-    ("VS BIT: HUA-Timeout", "VS BIT time out-HUA-doors not restored to pre-VS BIT state in time."),
-    ("VS BIT: Timeout", "VS BIT time out."),
-    ("VS BIT: HUA Terminate", "HUA had a safety protocol violated and terminated the BIT."),
-    ("VS BIT: Pilot Delay", "This indicates that the pilot is to wait at a minimum 15 secs before attempting to run VS BIT. Either the engine has not reached Idle yet or some other action is still in progress that prevents VS BIT entry. This FnA will clear when the timers have cleared."),
-    ("VS BIT: Convert to CTOL", "VS BIT cannot be performed if the aircraft is not in CTOL mode. Pilot needs to ensure that the aircraft is in the proper configuration to run VS BIT. FnA will clear once in CTOL mode."),
-    ("VS BIT: ETR to Idle", "VS BIT will fail if the Engine is not at idle. Ensure the Throttle is set to Idle and delay 15 secs before requesting VS BIT. FnA will clear once ETR has reached steady state for 15 seconds."),
-    ("VS BIT: In Motion", "VS BIT cannot be performed while the aircraft is moving. Stop the aircraft and ensure the Parking Brake is set prior to requesting VS BIT."),
-    ("VS BIT: Parking Brake", "VS BIT cannot be performed if the Parking Brake is not set. Set the Parking Brake before requesting VS BIT."),
-    ("VS BIT: Not Available", "VS BIT is not available. No pilot action will return the capability of VS BIT."),
-]
-VS_BIT_FAILURE_TITLES: List[str] = [title for title, _desc in VS_BIT_FAILURE_CATALOG]
-IPP_LIGHT_FLASH_INTERVAL_MS = 250
-IPP_START_SUCCESS_FLASH_MS = 10000
-IPP_START_FAIL_FLASH_MS = 5000
-IPP_OFF_HOLD_REQUIRED_MS = 5000
-IPP_SHUTDOWN_FLASH_MS = 60000
-CONSOLE_LEFT_GEAR_TRANSITION_MIN_MS = 8000
-CONSOLE_LEFT_GEAR_TRANSITION_MAX_MS = 11000
-CONSOLE_LEFT_GEAR_TRANSITION_DEFAULT_MS = 9500
-BATT_28V_SBIT_START_DELAY_MS = 2000
-BATT_28V_SBIT_COMPLETE_MS = 15000
-BATT_28V_SBIT_FLASH_MS = 1000
-BATT_28V_DIS_BATT_OFF_CLEAR_MS = 5000
-BATT_28V_DIS_IPP_READY_CLEAR_MS = 7000
-BATT_28V_LOW_FLASH_INTERVAL_MS = 250
-BATT_270V_BIT_FLASH_MS = 250
-ENGINE_MOTOR_SPOOL_MS = 30000
-ENGINE_RUN_SPOOL_MS = 60000
-ENGINE_OFF_FROM_MOTOR_SPOOL_MS = 30000
-ENGINE_OFF_FROM_RUN_SPOOL_MS = 30000
-THROTTLE_HANDLE_MAX_DX_PX = 550
-THROTTLE_HANDLE_MAX_DY_PX = -50
-AIRSPEED_MIN_THRUST_PCT = 15.0
-AIRSPEED_AB_START_THRUST_PCT = 100.0
-AIRSPEED_MAX_THRUST_PCT = 150.0
-AIRSPEED_MAX_KTS = 710.0
-AIRSPEED_AT_AB_START_KTS = 420.0
-AIRSPEED_PRE_AB_EXP = 1.1
-AIRSPEED_AB_EXP = 0.4
-AIRSPEED_MAX_ACCEL_KTS_PER_SEC = 25.0
-AIRSPEED_DECEL_GAP_COEFF = 0.1
-AIRSPEED_MIN_DECEL_KTS_PER_SEC = 0.5
-AIRSPEED_MAX_DECEL_KTS_PER_SEC = 15.0
-KTS_PER_FPS = 0.592483801295896
-G_ACCEL_FTPS2 = 32.174
-F35_EMPTY_WEIGHT_LBS = 29000.0
-ENGINE_THRUST_LBF_IDLE_CUTOFF_PCT = 15.0
-ENGINE_THRUST_LBF_MIL_PCT = 99.0
-ENGINE_THRUST_LBF_AB_START_PCT = 100.0
-ENGINE_THRUST_LBF_MAX_PCT = 150.0
-ENGINE_THRUST_LBF_MIL = 28000.0
-ENGINE_THRUST_LBF_MAX = 43000.0
-LIFT_COEFF_MAX = 1.0
-AERO_LIFT_CEILING_FT = 50000.0
-AERO_LIFT_CEILING_MIN_FACTOR = 0.05
-AERO_LIFT_ALTITUDE_EXP = 1.6
-AERO_DRAG_BASE_LBF = 1500.0
-AERO_DRAG_QUAD_COEFF = 0.028
-AERO_DRAG_HIGH_SPEED_BREAK_FPS = 950.0
-AERO_DRAG_HIGH_SPEED_COEFF = 0.05
-CLIMB_ENERGY_EXCHANGE_FACTOR = 1.0
-VERTICAL_LIFT_ALIGN_RATE_MIN = 1.0
-VERTICAL_LIFT_ALIGN_RATE_MAX = 7.0
-LOW_SPEED_DESCENT_NO_CLIMB_STALL_FACTOR = 1.2
-STALL_NOSE_DROP_DPS_MAX = 14.0
-BANK_NOSE_DIP_DPS_MAX = 10.0
-PITCH_STABILITY_DPS = 4.0
-GROUND_ROLLING_RESIST_KTS_PER_SEC = 8.0
-GROUND_IDLE_BRAKING_KTS_PER_SEC = 130.0
-GROUND_DECEL_DISABLE_THRUST_PCT = 30.0
-GUN_FIRE_RATE_RPS = 55.0
-ALTITUDE_MIN_SPEED_KTS = 150.0
-ALTITUDE_KNEE_SPEED_KTS = 300.0
-ALTITUDE_MAX_SPEED_KTS = 710.0
-ALTITUDE_KNEE_FT = 25000.0
-ALTITUDE_MAX_FT = 50000.0
-ALTITUDE_PRE_KNEE_EXP = 1.2
-ALTITUDE_POST_KNEE_EXP = 1.0
-ALTITUDE_RATE_COEFF = 1.0
-ALTITUDE_MAX_CLIMB_FPM = 45000.0
-ALTITUDE_MAX_DESCENT_FPM = 15000.0
-ALTITUDE_STALL_SPEED_KTS = 150.0
-ALTITUDE_CLIMB_AT_STALL_FPM = 800.0
-ALTITUDE_CLIMB_AT_MAX_SPEED_FPM = 14000.0
-ALTITUDE_DESCENT_AT_STALL_FPM = 2000.0
-ALTITUDE_DESCENT_AT_MAX_SPEED_FPM = 18000.0
-ALTITUDE_STALL_SINK_BASE_FPM = 6000.0
-ALTITUDE_STALL_SINK_PER_KT_FPM = 40.0
-ATTITUDE_PITCH_RATE_MIN_DPS = 6.0
-ATTITUDE_PITCH_RATE_MAX_DPS = 28.0
-ATTITUDE_ROLL_RATE_MIN_DPS = 20.0
-ATTITUDE_ROLL_RATE_MAX_DPS = 120.0
-ATTITUDE_RUDDER_YAW_RATE_MAX_DPS = 18.0
-ATTITUDE_PITCH_TO_YAW_COUPLE = 1.0
-ATTITUDE_YAW_TO_PITCH_COUPLE = 1.0
-ATTITUDE_BANK_TURN_RATE_SCALE = 1.0
-ATTITUDE_BANK_TURN_RATE_MAX_DPS = 26.0
-# Invert pitch/yaw inputs only when truly near inverted flight.
-# This prevents relationship flips just from crossing +/-90 deg bank.
-ATTITUDE_INPUT_INVERT_ROLL_ENTER_DEG = 170.0
-ATTITUDE_INPUT_INVERT_ROLL_EXIT_DEG = 165.0
-VERTICAL_RATE_FULL_SCALE_PITCH_DEG = 25.0
-ATT_PITCH_FLIP_START_DEG = 87.0
-ATT_PITCH_FLIP_END_DEG = 93.0
-GEAR_UP_MIN_AIRSPEED_KTS = 150.0
-
-_POWER_PANEL_BUTTON_RULES: Dict[str, Dict[str, object]] = {
-    "BAT": {"type": "toggle", "off": "BAT OFF.png", "on": "BAT ON.png"},
-    "ICC3": {"type": "toggle", "off": "ICC3 OFF.png", "on": "ICC3 ON.png"},
-    "ICC2": {"type": "toggle", "off": "ICC2 OFF.png", "on": "ICC2 ON.png"},
-    "ICC1": {"type": "toggle", "off": "ICC1 OFF.png", "on": "ICC1 ON.png"},
-    "CAB_PRESS": {
-        "type": "tri",
-        "norm": "CAB PRES NORM.png",
-        "dump": "CAB PRES DUMP.png",
-        "ram": "CAB PRES RAM.png",
-    },
-    "IPP": {
-        "type": "hold_lr",
-        "auto": "IPP AUTO.png",
-        "left": "IPP OFF.png",
-        "right": "IPP START.png",
-    },
-    "EMER": {"type": "press", "image": "EMER BUTTON.png"},
-}
-_THROTTLE_PANEL_BUTTON_RULES: Dict[str, Dict[str, object]] = {
-    "CANOPY": {
-        "type": "hold_lr_tri",
-        "up": "CANOPY UP.png",
-        "center": "CANOPY CENTER.png",
-        "down": "CANOPY DOWN.png",
-    },
-    "ENGINE": {
-        "type": "tri_lr",
-        "left": "ENGINE RUN.png",
-        "center": "ENGINE OFF.png",
-        "right": "ENGINE MOTOR.png",
-    },
-    "FCS_RESET": {"type": "toggle", "up": "FCS RESET UP.png", "down": "FCS RESET DOWN.png"},
-    "RUDDER": {
-        "type": "tri_lr",
-        "left": "RUDDER LEFT.png",
-        "center": "RUDDER CENTER.png",
-        "right": "RUDDER RIGHT.png",
-    },
-    "VS_BIT": {"type": "press", "image": "VS BIT BUTTON.png"},
-}
-_DISPLAY_CONTROL_BUTTON_RULES: Dict[str, Dict[str, object]] = {
-    "BRT_DOWN": {"type": "button", "image": "BRT DOWN.png"},
-    "BRT_UP": {"type": "button", "image": "BRT UP.png"},
-    "MFD": {
-        "type": "tri_lr",
-        "right": "MFD DAY.png",
-        "center": "MFD NIGHT.png",
-        "left": "MFD OFF.png",
-    },
-}
-_MASTER_ARM_BUTTON_RULES: Dict[str, Dict[str, object]] = {
-    "DIAL_A": {"type": "dial", "image": "DIAL A.png"},
-    "DIAL_B": {"type": "dial", "image": "DIAL B.png"},
-    "DIAL_C": {"type": "dial", "image": "DIAL C.png"},
-    "MASTER_ARM": {"type": "toggle", "off": "MASTER ARM OFF.png", "on": "MASTER ARM ON.png"},
-}
-_CONSOLE_LEFT_BUTTON_RULES: Dict[str, Dict[str, object]] = {
-    "JETT": {
-        "type": "tri_lr",
-        "ext": "JETT EXT.png",
-        "sel": "JETT SEL.png",
-        "all": "JETT ALL.png",
-    },
-    "PARKING_BRAKE": {
-        "type": "toggle",
-        "on": "PARKING BRAKE ON.png",
-        "off": "PARKING BRAKE OFF.png",
-    },
-    "GEAR": {
-        "type": "quad",
-        "down_off": "GEAR DOWN OFF.png",
-        "down_on": "GEAR DOWN ON.png",
-        "up_off": "GEAR UP OFF.png",
-        "up_on": "GEAR UP ON.png",
-    },
-}
-
-
-def _airspeed_kts_from_thrust_pct(thrust_pct: float) -> float:
-    t = max(0.0, min(AIRSPEED_MAX_THRUST_PCT, float(thrust_pct)))
-    if t <= AIRSPEED_MIN_THRUST_PCT:
-        return 0.0
-    if t <= AIRSPEED_AB_START_THRUST_PCT:
-        span_pre_ab = max(1e-6, AIRSPEED_AB_START_THRUST_PCT - AIRSPEED_MIN_THRUST_PCT)
-        frac_pre_ab = max(0.0, min(1.0, (t - AIRSPEED_MIN_THRUST_PCT) / span_pre_ab))
-        v = AIRSPEED_AT_AB_START_KTS * (frac_pre_ab ** AIRSPEED_PRE_AB_EXP)
-        return max(0.0, min(AIRSPEED_MAX_KTS, float(v)))
-    span_ab = max(1e-6, AIRSPEED_MAX_THRUST_PCT - AIRSPEED_AB_START_THRUST_PCT)
-    frac_ab = max(0.0, min(1.0, (t - AIRSPEED_AB_START_THRUST_PCT) / span_ab))
-    v = AIRSPEED_AT_AB_START_KTS + (AIRSPEED_MAX_KTS - AIRSPEED_AT_AB_START_KTS) * (frac_ab ** AIRSPEED_AB_EXP)
-    return max(0.0, min(AIRSPEED_MAX_KTS, float(v)))
-
-
-def _thrust_pct_from_airspeed_kts(airspeed_kts: float) -> float:
-    v = max(0.0, min(float(AIRSPEED_MAX_KTS), float(airspeed_kts)))
-    if v <= 0.0:
-        return 0.0
-    if v <= float(AIRSPEED_AT_AB_START_KTS):
-        frac = max(0.0, min(1.0, v / max(1e-6, float(AIRSPEED_AT_AB_START_KTS))))
-        frac_pre_ab = frac ** (1.0 / max(1e-6, float(AIRSPEED_PRE_AB_EXP)))
-        thrust = float(AIRSPEED_MIN_THRUST_PCT) + (
-            float(AIRSPEED_AB_START_THRUST_PCT) - float(AIRSPEED_MIN_THRUST_PCT)
-        ) * frac_pre_ab
-        return max(0.0, min(float(AIRSPEED_MAX_THRUST_PCT), float(thrust)))
-    frac_ab = max(
-        0.0,
-        min(
-            1.0,
-            (v - float(AIRSPEED_AT_AB_START_KTS))
-            / max(1e-6, float(AIRSPEED_MAX_KTS) - float(AIRSPEED_AT_AB_START_KTS)),
-        ),
-    )
-    frac_thrust_ab = frac_ab ** (1.0 / max(1e-6, float(AIRSPEED_AB_EXP)))
-    thrust = float(AIRSPEED_AB_START_THRUST_PCT) + (
-        float(AIRSPEED_MAX_THRUST_PCT) - float(AIRSPEED_AB_START_THRUST_PCT)
-    ) * frac_thrust_ab
-    return max(0.0, min(float(AIRSPEED_MAX_THRUST_PCT), float(thrust)))
-
-
-def _engine_thrust_lbf_from_percent(thrust_pct: float) -> float:
-    pct = max(0.0, min(float(ENGINE_THRUST_LBF_MAX_PCT), float(thrust_pct)))
-    if pct <= float(ENGINE_THRUST_LBF_IDLE_CUTOFF_PCT):
-        return 0.0
-    if pct <= float(ENGINE_THRUST_LBF_MIL_PCT):
-        span = max(1e-6, float(ENGINE_THRUST_LBF_MIL_PCT) - float(ENGINE_THRUST_LBF_IDLE_CUTOFF_PCT))
-        frac = (pct - float(ENGINE_THRUST_LBF_IDLE_CUTOFF_PCT)) / span
-        return max(0.0, float(ENGINE_THRUST_LBF_MIL) * max(0.0, min(1.0, frac)))
-    if pct < float(ENGINE_THRUST_LBF_AB_START_PCT):
-        return float(ENGINE_THRUST_LBF_MIL)
-    span_ab = max(1e-6, float(ENGINE_THRUST_LBF_MAX_PCT) - float(ENGINE_THRUST_LBF_AB_START_PCT))
-    frac_ab = (pct - float(ENGINE_THRUST_LBF_AB_START_PCT)) / span_ab
-    return float(ENGINE_THRUST_LBF_MIL) + (float(ENGINE_THRUST_LBF_MAX) - float(ENGINE_THRUST_LBF_MIL)) * max(0.0, min(1.0, frac_ab))
-
-
-def _gross_weight_lbf_from_fuel() -> float:
-    try:
-        fuel_lbs = max(0.0, float(getattr(formats.FuelFormat, "_shared_total_lbs", 0.0)))
-    except Exception:
-        fuel_lbs = 0.0
-    # Match FUEL GW readout: GW = 29.0 + (fuel_lbs / 1000.0).
-    return float(F35_EMPTY_WEIGHT_LBS) + float(fuel_lbs)
-
-
-def _total_fuel_lbs_runtime() -> float:
-    try:
-        shared_qty = getattr(formats.FuelFormat, "_shared_fuel_qty", None)
-        if isinstance(shared_qty, dict) and len(shared_qty) > 0:
-            total = float(sum(max(0.0, float(v)) for v in shared_qty.values()))
-            if total > 0.0:
-                return total
-    except Exception:
-        pass
-    try:
-        return max(0.0, float(getattr(formats.FuelFormat, "_shared_total_lbs", 0.0)))
-    except Exception:
-        return 0.0
-
-
-def _fuel_feed_available(min_total_lbs: float = 1.0) -> bool:
-    return _total_fuel_lbs_runtime() > max(0.0, float(min_total_lbs))
-
-
-def _lift_coeff_from_airspeed_kts(airspeed_kts: float, altitude_ft: float, _bank_deg: float) -> float:
-    stall = max(1e-6, float(ALTITUDE_STALL_SPEED_KTS))
-    ratio = max(0.0, float(airspeed_kts) / stall)
-    coeff = ratio * ratio
-    ceiling = max(1.0, float(AERO_LIFT_CEILING_FT))
-    alt_norm = max(0.0, min(1.0, float(altitude_ft) / ceiling))
-    alt_factor = 1.0 - (alt_norm ** float(AERO_LIFT_ALTITUDE_EXP))
-    alt_factor = max(float(AERO_LIFT_CEILING_MIN_FACTOR), min(1.0, alt_factor))
-    coeff *= alt_factor
-    return max(0.0, min(float(LIFT_COEFF_MAX), coeff))
-
-
-def _aero_drag_lbf(speed_fps: float) -> float:
-    v = max(0.0, float(speed_fps))
-    high = max(0.0, v - float(AERO_DRAG_HIGH_SPEED_BREAK_FPS))
-    drag = float(AERO_DRAG_BASE_LBF) + (float(AERO_DRAG_QUAD_COEFF) * v * v) + (float(AERO_DRAG_HIGH_SPEED_COEFF) * high * high)
-    return max(0.0, drag)
-
-
-def _altitude_target_ft_from_airspeed_kts(airspeed_kts: float) -> float:
-    s = max(0.0, min(ALTITUDE_MAX_SPEED_KTS, float(airspeed_kts)))
-    if s <= ALTITUDE_MIN_SPEED_KTS:
-        return 0.0
-    if s <= ALTITUDE_KNEE_SPEED_KTS:
-        span_pre = max(1e-6, ALTITUDE_KNEE_SPEED_KTS - ALTITUDE_MIN_SPEED_KTS)
-        frac_pre = max(0.0, min(1.0, (s - ALTITUDE_MIN_SPEED_KTS) / span_pre))
-        return max(0.0, min(ALTITUDE_MAX_FT, ALTITUDE_KNEE_FT * (frac_pre ** ALTITUDE_PRE_KNEE_EXP)))
-    span_post = max(1e-6, ALTITUDE_MAX_SPEED_KTS - ALTITUDE_KNEE_SPEED_KTS)
-    frac_post = max(0.0, min(1.0, (s - ALTITUDE_KNEE_SPEED_KTS) / span_post))
-    v = ALTITUDE_KNEE_FT + (ALTITUDE_MAX_FT - ALTITUDE_KNEE_FT) * (frac_post ** ALTITUDE_POST_KNEE_EXP)
-    return max(0.0, min(ALTITUDE_MAX_FT, float(v)))
-
-
-def _ensure_panel_button_states() -> Dict[str, Dict[str, object]]:
-    state = getattr(formats, "PANEL_BUTTON_STATES", None)
-    if not isinstance(state, dict):
-        state = {}
-        setattr(formats, "PANEL_BUTTON_STATES", state)
-    power = state.get("POWER PANEL")
-    if not isinstance(power, dict):
-        power = {}
-        state["POWER PANEL"] = power
-    power.setdefault("BAT", "OFF")
-    power.setdefault("ICC3", "OFF")
-    power.setdefault("ICC2", "OFF")
-    power.setdefault("ICC1", "OFF")
-    power.setdefault("CAB_PRESS", "NORM")
-    power.setdefault("IPP", "AUTO")
-    power.setdefault("IPP_ON", False)
-    power.setdefault("IPP_ON_SINCE_MS", 0)
-    power.setdefault("IPP_START_HOLD_MS", 0)
-    power.setdefault("IPP_OFF_HOLD_MS", 0)
-    power.setdefault("IPP_START_SEQ_END_MS", 0)
-    power.setdefault("IPP_START_SEQ_SUCCESS", False)
-    power.setdefault("IPP_START_BLOCKED", False)
-    power.setdefault("IPP_SHUTDOWN_SEQ_END_MS", 0)
-    power.setdefault("BAT_ON_SINCE_MS", 0)
-    power.setdefault("BAT_OFF_SINCE_MS", 0)
-    power.setdefault("BATT_28V", 95.0)
-    power.setdefault("BAT_ACTIVE", False)
-    power.setdefault("BATT_28V_SBIT_STARTED", False)
-    power.setdefault("BATT_28V_SBIT_COMPLETE", False)
-    power.setdefault("BATT_28V_SBIT_FLASH_UNTIL_MS", 0)
-    power.setdefault("BATT_28V_DIS_ON", False)
-    power.setdefault("BATT_28V_DIS_CLEAR_DUE_MS", 0)
-    power.setdefault("BATT_28V_LOW_LIGHT", False)
-    power.setdefault("BATT_28V_DIS_LIGHT", False)
-    power.setdefault("BATT_270V_BIT_FLASH_UNTIL_MS", 0)
-    power.setdefault("BATT_270V_DIS_ON", False)
-    power.setdefault("BATT_270V_LOW_LIGHT", False)
-    power.setdefault("BATT_270V_DIS_LIGHT", False)
-    power.setdefault("EMER_PRESSED", False)
-    throttle = state.get("THROTTLE")
-    if not isinstance(throttle, dict):
-        throttle = {}
-        state["THROTTLE"] = throttle
-    throttle.setdefault("CANOPY", "CENTER")
-    throttle.setdefault("CANOPY_POS", 0.0)
-    throttle.setdefault("ENGINE", "OFF")
-    throttle.setdefault("THROTTLE_POS", 0.0)
-    throttle.setdefault("ENGINE_SPOOL", 0.0)
-    throttle.setdefault("ENGINE_SPOOL_MODE", "OFF")
-    throttle.setdefault("ENGINE_LAST_NON_OFF", "OFF")
-    throttle.setdefault("ENGINE_PREV_CMD", "OFF")
-    throttle.setdefault("ENGINE_SWITCH_PREV", "OFF")
-    throttle.setdefault("ENGINE_RUN_TRANSITION_ACTIVE", False)
-    throttle.setdefault("ENGINE_RUN_TRANSITION_MS", 0.0)
-    throttle.setdefault("ENGINE_RUN_TRANSITION_FROM", {})
-    throttle.setdefault("ENGINE_OFF_EGT_BASE", float(random.uniform(20.0, 60.0)))
-    throttle.setdefault("FCS_RESET", "DOWN")
-    throttle.setdefault("RUDDER", "CENTER")
-    throttle.setdefault("RUDDER_TRIM_IN", 0.0)
-    throttle.setdefault("VS_BIT_PRESSED", False)
-    throttle.setdefault("VS_BIT_RUNNING", False)
-    throttle.setdefault("VS_BIT_END_MS", 0)
-    throttle.setdefault("VS_BIT_START_MS", 0)
-    throttle.setdefault("VS_BIT_HOLD_THROTTLE_POS", 0.0)
-    throttle.setdefault("VS_BIT_MANUAL_OVERRIDE", False)
-    throttle.setdefault("VS_BIT_REFUEL_SEEN", False)
-    throttle.setdefault("VS_BIT_NO_GO", False)
-    throttle.setdefault("VS_BIT_DOOR_MOVED", False)
-    throttle.setdefault("VS_BIT_THROTTLE_MOVED", False)
-    throttle.setdefault("VS_BIT_CTRL_MOVED", False)
-    throttle.setdefault("VS_BIT_DOOR_SIG", "")
-    throttle.setdefault("VS_BIT_EXPECT_REFUEL_OPEN", None)
-    throttle.setdefault("VS_BIT_FCS_ACTIVE", False)
-    throttle.setdefault("VS_BIT_FCS_STEP_IDX", 0)
-    throttle.setdefault("VS_BIT_FCS_ACTION_DONE", False)
-    throttle.setdefault("VS_BIT_FCS_NEXT_STEP_MS", 0)
-    throttle.setdefault("VS_BIT_STATUS", "OK")  # OK | TS | FN
-    throttle.setdefault("VS_BIT_FAIL_REASONS", [])
-    throttle.setdefault("VS_BIT_REASON_CATALOG", [])
-    throttle.setdefault("VS_BIT_LAST_RESULT_MS", 0)
-    throttle.setdefault("VS_BIT_IDLE_SINCE_MS", 0)
-    throttle.setdefault("VS_BIT_HOTAS_LAST_CMD", None)
-    throttle.setdefault("VS_BIT_ABORT_INPUT_SOURCE", "")
-    throttle.setdefault("VS_BIT_ABORT_INPUT_DETAIL", "")
-    display = state.get("DISPLAY CONTROL")
-    if not isinstance(display, dict):
-        display = {}
-        state["DISPLAY CONTROL"] = display
-    display.setdefault("MFD_MODE", "DAY")
-    display.setdefault("BRIGHTNESS_LEVEL", 10)
-    master_arm = state.get("MASTER ARM")
-    if not isinstance(master_arm, dict):
-        master_arm = {}
-        state["MASTER ARM"] = master_arm
-    master_arm.setdefault("MASTER_ARM", "OFF")
-    master_arm.setdefault("DIAL_A", 5)
-    master_arm.setdefault("DIAL_B", 5)
-    master_arm.setdefault("DIAL_C", 5)
-    console_left = state.get("CONSOLE LEFT")
-    if not isinstance(console_left, dict):
-        console_left = {}
-        state["CONSOLE LEFT"] = console_left
-    console_left.setdefault("JETT", "EXT")
-    console_left.setdefault("PARKING_BRAKE", "ON")
-    console_left.setdefault("GEAR", "DOWN_OFF")
-    console_left.setdefault("GEAR_TRANSITION_DUE_MS", 0)
-    console_left.setdefault("GEAR_TRANSITION_START_MS", 0)
-    console_left.setdefault("GEAR_TRANSITION_DIR", "")
-    console_left.setdefault("GEAR_TRANSITION_DURATION_MS", 0)
-    console_left.setdefault("JETT_ACTIVATE_COUNT", 0)
-    console_left.setdefault("JETT_LAST_ACTIVATE_MS", 0)
-    aircraft = state.get("AIRCRAFT")
-    if not isinstance(aircraft, dict):
-        aircraft = {}
-        state["AIRCRAFT"] = aircraft
-    aircraft.setdefault("AIRSPEED_KTS", 0.0)
-    aircraft.setdefault("TOTAL_SPEED_KTS", 0.0)
-    aircraft.setdefault("ALTITUDE_FT", 0.0)
-    aircraft.setdefault("ALTITUDE_TARGET_FT", 0.0)
-    aircraft.setdefault("VERTICAL_SPEED_FPM", 0.0)
-    aircraft.setdefault("PITCH_CMD", 0.0)
-    aircraft.setdefault("ATT_PITCH_DEG", 0.0)
-    aircraft.setdefault("ATT_ROLL_DEG", 0.0)
-    aircraft.setdefault("ATT_YAW_RATE_DPS", 0.0)
-    aircraft.setdefault("PITCH", 0.0)
-    aircraft.setdefault("YAW", 0.0)
-    aircraft.setdefault("ROLL", 0.0)
-    aircraft.setdefault("ATTITUDE", 0.0)
-    aircraft.setdefault("BANK", 0.0)
-    aircraft.setdefault("ATT_DEBUG_LAST_PRINT_MS", 0.0)
-    aircraft.setdefault("ATT_PITCH_RAW_DEG", 0.0)
-    aircraft.setdefault("ATT_ROLL_RAW_DEG", 0.0)
-    aircraft.setdefault("ATT_HEADING_BASE_DEG", 35.0)
-    aircraft.setdefault("ATT_Q_W", 1.0)
-    aircraft.setdefault("ATT_Q_X", 0.0)
-    aircraft.setdefault("ATT_Q_Y", 0.0)
-    aircraft.setdefault("ATT_Q_Z", 0.0)
-    aircraft.setdefault("ATT_PITCH_INVERTED", False)
-    aircraft.setdefault("ATT_PITCH_FLIP_BLEND", 0.0)
-    aircraft.setdefault("ATT_PITCH_FLIP_LATCH", False)
-    aircraft.setdefault("ATT_INPUT_INVERTED", False)
-    aircraft.setdefault("G_LOAD", 1.0)
-    aircraft.setdefault("VEL_X_FPS", 0.0)
-    aircraft.setdefault("VEL_Y_FPS", 0.0)
-    aircraft.setdefault("VEL_Z_FPS", 0.0)
-    aircraft.setdefault("HEADING_DEG", 35.0)
-    aircraft.setdefault("HDG_DEG", 35.0)
-    aircraft.setdefault("HEADING", 35.0)
-    aircraft.setdefault("HDG", 35.0)
-    aircraft.setdefault("l_lef", 0.0)
-    aircraft.setdefault("r_lef", 0.0)
-    aircraft.setdefault("l_aileron", 0.0)
-    aircraft.setdefault("r_aileron", 0.0)
-    aircraft.setdefault("l_rudder", 0.0)
-    aircraft.setdefault("r_rudder", 0.0)
-    aircraft.setdefault("l_elevator", 0.0)
-    aircraft.setdefault("r_elevator", 0.0)
-    aircraft.setdefault("fcs_top_cyan_x_in", 0.0)
-    aircraft.setdefault("fcs_top_cyan_y_in", 0.0)
-    aircraft.setdefault("fcs_bottom_cyan_x_in", 0.0)
-    aircraft.setdefault("fcs_rudder_trim_in", 0.0)
-    phm_status = state.get("PHM STATUS")
-    if not isinstance(phm_status, dict):
-        phm_status = {}
-        state["PHM STATUS"] = phm_status
-    phm_status.setdefault("status_overrides", {})
-    phm_status.setdefault("hrc_events", {})
-    phm_status.setdefault("fna_events", {})
-    phm_status.setdefault("remove_default_cni_migrated", False)
-    if not bool(phm_status.get("defaults_initialized", False)):
-        hrc_events = phm_status.get("hrc_events", {})
-        fna_events = phm_status.get("fna_events", {})
-        status_overrides = phm_status.get("status_overrides", {})
-        if not isinstance(hrc_events, dict):
-            hrc_events = {}
-            phm_status["hrc_events"] = hrc_events
-        if not isinstance(fna_events, dict):
-            fna_events = {}
-            phm_status["fna_events"] = fna_events
-        if not isinstance(status_overrides, dict):
-            status_overrides = {}
-            phm_status["status_overrides"] = status_overrides
-        phm_status["defaults_initialized"] = True
-    if not bool(phm_status.get("remove_default_cni_migrated", False)):
-        hrc_events = phm_status.get("hrc_events", {})
-        fna_events = phm_status.get("fna_events", {})
-        status_overrides = phm_status.get("status_overrides", {})
-        if isinstance(hrc_events, dict):
-            cni_vals = hrc_events.get("CNI", [])
-            if isinstance(cni_vals, list):
-                filtered_cni = [str(x).strip() for x in cni_vals if str(x).strip() != ""]
-                if len(filtered_cni) == 1 and filtered_cni[0] == "2336130 15 2829":
-                    hrc_events.pop("CNI", None)
-        if isinstance(status_overrides, dict):
-            if str(status_overrides.get("COM_NAV", "")).upper().strip() == "HR":
-                has_cni_hrc = False
-                has_com_nav_hrc = False
-                has_com_nav_fna = False
-                if isinstance(hrc_events, dict):
-                    cni_hrc = hrc_events.get("CNI", [])
-                    com_nav_hrc = hrc_events.get("COM_NAV", [])
-                    has_cni_hrc = isinstance(cni_hrc, list) and any(str(x).strip() != "" for x in cni_hrc)
-                    has_com_nav_hrc = isinstance(com_nav_hrc, list) and any(str(x).strip() != "" for x in com_nav_hrc)
-                if isinstance(fna_events, dict):
-                    com_nav_fna = fna_events.get("COM_NAV", [])
-                    has_com_nav_fna = isinstance(com_nav_fna, list) and any(str(x).strip() != "" for x in com_nav_fna)
-                if not has_cni_hrc and not has_com_nav_hrc and not has_com_nav_fna:
-                    status_overrides.pop("COM_NAV", None)
-        phm_status["remove_default_cni_migrated"] = True
-    return state
-
-
-def _load_panel_button_image(panel_name: str, filename: str) -> Optional[pygame.Surface]:
-    key = f"{panel_name}/{filename}"
-    if key in _PANEL_BUTTON_IMAGE_CACHE:
-        return _PANEL_BUTTON_IMAGE_CACHE[key]
-    path = resource_path("icons", "PANELS", panel_name, "BUTTONS", filename)
-    if not path.exists():
-        _PANEL_BUTTON_IMAGE_CACHE[key] = None
-        return None
-    try:
-        surf = pygame.image.load(str(path)).convert_alpha()
-        _PANEL_BUTTON_IMAGE_CACHE[key] = surf
-        return surf
-    except Exception:
-        _PANEL_BUTTON_IMAGE_CACHE[key] = None
-        return None
-
-
-def _button_alpha_bbox(panel_name: str, filename: str, image: pygame.Surface) -> Optional[pygame.Rect]:
-    key = f"{panel_name}/{filename}"
-    if key in _PANEL_BUTTON_BBOX_CACHE:
-        return _PANEL_BUTTON_BBOX_CACHE[key]
-    try:
-        bbox = image.get_bounding_rect(min_alpha=1)
-        if bbox.width <= 0 or bbox.height <= 0:
-            _PANEL_BUTTON_BBOX_CACHE[key] = None
-            return None
-        _PANEL_BUTTON_BBOX_CACHE[key] = bbox
-        return bbox
-    except Exception:
-        _PANEL_BUTTON_BBOX_CACHE[key] = None
-        return None
-
-
-def _power_panel_button_image_filename(control: str, states: Dict[str, object]) -> str:
-    rule = _POWER_PANEL_BUTTON_RULES.get(control, {})
-    rtype = str(rule.get("type", ""))
-    if rtype == "toggle":
-        current = str(states.get(control, "OFF")).upper()
-        return str(rule.get("on" if current == "ON" else "off", ""))
-    if rtype == "tri":
-        mode = str(states.get("CAB_PRESS", "NORM")).upper()
-        if mode == "DUMP":
-            return str(rule.get("dump", ""))
-        if mode == "RAM":
-            return str(rule.get("ram", ""))
-        return str(rule.get("norm", ""))
-    if rtype == "hold_lr":
-        mode = str(states.get("IPP", "AUTO")).upper()
-        if mode == "OFF":
-            return str(rule.get("left", ""))
-        if mode == "START":
-            return str(rule.get("right", ""))
-        return str(rule.get("auto", ""))
-    return str(rule.get("image", ""))
-
-
-def _ipp_light_visible(power: Dict[str, object], now_ms: int) -> bool:
-    start_seq_end = int(power.get("IPP_START_SEQ_END_MS", 0))
-    shutdown_seq_end = int(power.get("IPP_SHUTDOWN_SEQ_END_MS", 0))
-    ipp_on = bool(power.get("IPP_ON", False))
-    batt_on = bool(power.get("BAT_ACTIVE", str(power.get("BAT", "OFF")).upper() == "ON"))
-    try:
-        batt_28v = float(power.get("BATT_28V", 0.0))
-    except Exception:
-        batt_28v = 0.0
-    if batt_28v <= 0.0:
-        return False
-    flashing = (start_seq_end > now_ms) or (shutdown_seq_end > now_ms)
-    if flashing:
-        if not batt_on and not ipp_on:
-            return False
-        return ((int(now_ms) // IPP_LIGHT_FLASH_INTERVAL_MS) % 2) == 0
-    return ipp_on
-
-
-def _button_image_rotated_cw_90(panel_name: str, filename: str, src: pygame.Surface) -> pygame.Surface:
-    key = f"{panel_name}/{filename}"
-    cached = _PANEL_BUTTON_ROT_CW90_CACHE.get(key)
-    if cached is not None:
-        return cached
-    rotated = pygame.transform.rotate(src, -90)
-    _PANEL_BUTTON_ROT_CW90_CACHE[key] = rotated
-    return rotated
-
-
-def _throttle_panel_button_image_filename(control: str, states: Dict[str, object]) -> str:
-    rule = _THROTTLE_PANEL_BUTTON_RULES.get(control, {})
-    rtype = str(rule.get("type", ""))
-    if control == "FCS_RESET" and rtype == "toggle":
-        current = str(states.get(control, "DOWN")).upper()
-        return str(rule.get("down" if current == "DOWN" else "up", ""))
-    if control == "CANOPY" and rtype == "hold_lr_tri":
-        current = str(states.get("CANOPY", "CENTER")).upper()
-        if current == "UP":
-            return str(rule.get("up", ""))
-        if current == "DOWN":
-            return str(rule.get("down", ""))
-        return str(rule.get("center", ""))
-    if control in {"ENGINE", "RUDDER"} and rtype == "tri_lr":
-        current = str(states.get(control, "CENTER")).upper()
-        if current == "LEFT":
-            return str(rule.get("left", ""))
-        if current == "RIGHT":
-            return str(rule.get("right", ""))
-        if control == "ENGINE" and current == "RUN":
-            return str(rule.get("left", ""))
-        if control == "ENGINE" and current == "MOTOR":
-            return str(rule.get("right", ""))
-        if control == "ENGINE":
-            return str(rule.get("center", ""))
-        return str(rule.get("center", ""))
-    return str(rule.get("image", ""))
-
-
-def _display_control_button_image_filename(control: str, states: Dict[str, object]) -> str:
-    rule = _DISPLAY_CONTROL_BUTTON_RULES.get(control, {})
-    if control == "MFD":
-        mode = str(states.get("MFD_MODE", "DAY")).upper()
-        if mode == "OFF":
-            return str(rule.get("left", ""))
-        if mode == "NIGHT":
-            return str(rule.get("center", ""))
-        return str(rule.get("right", ""))
-    return str(rule.get("image", ""))
-
-
-def _master_arm_button_image_filename(control: str, states: Dict[str, object]) -> str:
-    rule = _MASTER_ARM_BUTTON_RULES.get(control, {})
-    if control == "MASTER_ARM":
-        current = str(states.get("MASTER_ARM", "OFF")).upper()
-        return str(rule.get("on" if current == "ON" else "off", ""))
-    return str(rule.get("image", ""))
-
-
-def _console_left_button_image_filename(control: str, states: Dict[str, object]) -> str:
-    rule = _CONSOLE_LEFT_BUTTON_RULES.get(control, {})
-    if control == "JETT":
-        mode = str(states.get("JETT", "EXT")).upper()
-        if mode == "SEL":
-            return str(rule.get("sel", ""))
-        if mode == "ALL":
-            return str(rule.get("all", ""))
-        return str(rule.get("ext", ""))
-    if control == "PARKING_BRAKE":
-        current = str(states.get("PARKING_BRAKE", "ON")).upper()
-        return str(rule.get("off" if current == "OFF" else "on", ""))
-    if control == "GEAR":
-        mode = str(states.get("GEAR", "DOWN_OFF")).upper()
-        if mode == "DOWN_ON":
-            return str(rule.get("down_on", ""))
-        if mode == "UP_OFF":
-            return str(rule.get("up_off", ""))
-        if mode == "UP_ON":
-            return str(rule.get("up_on", ""))
-        return str(rule.get("down_off", ""))
-    return str(rule.get("image", ""))
-
-
-def _draw_console_left_panel_buttons(screen: pygame.Surface, image_rect: pygame.Rect) -> None:
-    state = _ensure_panel_button_states()
-    console_left = state.get("CONSOLE LEFT", {})
-    if not isinstance(console_left, dict):
-        return
-    for control in _CONSOLE_LEFT_BUTTON_RULES.keys():
-        filename = _console_left_button_image_filename(control, console_left)
-        if filename == "":
-            continue
-        src = _load_panel_button_image("CONSOLE LEFT", filename)
-        if src is None:
-            continue
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-        bbox = _button_alpha_bbox("CONSOLE LEFT", filename, src)
-        if bbox is None:
-            continue
-        sx = sw / float(max(1, src.get_width()))
-        sy = sh / float(max(1, src.get_height()))
-        hx = image_rect.left + int(round(bbox.x * sx))
-        hy = image_rect.top + int(round(bbox.y * sy))
-        hw = max(1, int(round(bbox.width * sx)))
-        hh = max(1, int(round(bbox.height * sy)))
-        _PANEL_RUNTIME_BUTTON_HITS.append(
-            {
-                "panel": "CONSOLE LEFT",
-                "control": control,
-                "rect": pygame.Rect(hx, hy, hw, hh),
-            }
-        )
-
-
-def _draw_display_control_panel_buttons(screen: pygame.Surface, image_rect: pygame.Rect) -> None:
-    state = _ensure_panel_button_states()
-    display = state.get("DISPLAY CONTROL", {})
-    if not isinstance(display, dict):
-        return
-    for control in _DISPLAY_CONTROL_BUTTON_RULES.keys():
-        filename = _display_control_button_image_filename(control, display)
-        if filename == "":
-            continue
-        src = _load_panel_button_image("DISPLAY CONTROL", filename)
-        if src is None:
-            continue
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-        bbox = _button_alpha_bbox("DISPLAY CONTROL", filename, src)
-        if bbox is None:
-            continue
-        sx = sw / float(max(1, src.get_width()))
-        sy = sh / float(max(1, src.get_height()))
-        hx = image_rect.left + int(round(bbox.x * sx))
-        hy = image_rect.top + int(round(bbox.y * sy))
-        hw = max(1, int(round(bbox.width * sx)))
-        hh = max(1, int(round(bbox.height * sy)))
-        _PANEL_RUNTIME_BUTTON_HITS.append(
-            {
-                "panel": "DISPLAY CONTROL",
-                "control": control,
-                "rect": pygame.Rect(hx, hy, hw, hh),
-            }
-        )
-
-
-def _draw_master_arm_panel_buttons(screen: pygame.Surface, image_rect: pygame.Rect) -> None:
-    state = _ensure_panel_button_states()
-    master_arm = state.get("MASTER ARM", {})
-    if not isinstance(master_arm, dict):
-        return
-    for control in _MASTER_ARM_BUTTON_RULES.keys():
-        filename = _master_arm_button_image_filename(control, master_arm)
-        if filename == "":
-            continue
-        src = _load_panel_button_image("MASTER ARM", filename)
-        if src is None:
-            continue
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-        bbox = _button_alpha_bbox("MASTER ARM", filename, src)
-        if bbox is None:
-            continue
-        sx = sw / float(max(1, src.get_width()))
-        sy = sh / float(max(1, src.get_height()))
-        hx = image_rect.left + int(round(bbox.x * sx))
-        hy = image_rect.top + int(round(bbox.y * sy))
-        hw = max(1, int(round(bbox.width * sx)))
-        hh = max(1, int(round(bbox.height * sy)))
-        _PANEL_RUNTIME_BUTTON_HITS.append(
-            {
-                "panel": "MASTER ARM",
-                "control": control,
-                "rect": pygame.Rect(hx, hy, hw, hh),
-            }
-        )
-
-
-def _draw_power_panel_buttons(screen: pygame.Surface, image_rect: pygame.Rect) -> None:
-    state = _ensure_panel_button_states()
-    power = state.get("POWER PANEL", {})
-    if not isinstance(power, dict):
-        return
-    for control in _POWER_PANEL_BUTTON_RULES.keys():
-        filename = _power_panel_button_image_filename(control, power)
-        if filename == "":
-            continue
-        src = _load_panel_button_image("POWER PANEL", filename)
-        if src is None:
-            continue
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-        bbox = _button_alpha_bbox("POWER PANEL", filename, src)
-        if bbox is None:
-            continue
-        sx = sw / float(max(1, src.get_width()))
-        sy = sh / float(max(1, src.get_height()))
-        hx = image_rect.left + int(round(bbox.x * sx))
-        hy = image_rect.top + int(round(bbox.y * sy))
-        hw = max(1, int(round(bbox.width * sx)))
-        hh = max(1, int(round(bbox.height * sy)))
-        _PANEL_RUNTIME_BUTTON_HITS.append(
-            {
-                "panel": "POWER PANEL",
-                "control": control,
-                "rect": pygame.Rect(hx, hy, hw, hh),
-            }
-        )
-    if _ipp_light_visible(power, int(pygame.time.get_ticks())):
-        src = _load_panel_button_image("POWER PANEL", "IPP LIGHT.png")
-        if src is not None:
-            sw = max(1, image_rect.width)
-            sh = max(1, image_rect.height)
-            scaled = pygame.transform.smoothscale(src, (sw, sh))
-            screen.blit(scaled, image_rect.topleft)
-    indicator_specs = [
-        ("BATT_28V_LOW_LIGHT", "28V LOW LIGHT.png"),
-        ("BATT_28V_DIS_LIGHT", "28V DIS LIGHT.png"),
-        ("BATT_270V_LOW_LIGHT", "270V LOW LIGHT.png"),
-        ("BATT_270V_DIS_LIGHT", "270V DIS LIGHT.png"),
-    ]
-    for state_key, filename in indicator_specs:
-        if not bool(power.get(state_key, False)):
-            continue
-        src = _load_panel_button_image("POWER PANEL", filename)
-        if src is None:
-            continue
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-    if _active_icaw_has("FIRE IPP"):
-        src = _load_panel_overlay_image("POWER PANEL", "FIRE.png")
-        if src is not None:
-            sw = max(1, image_rect.width)
-            sh = max(1, image_rect.height)
-            scaled = pygame.transform.smoothscale(src, (sw, sh))
-            screen.blit(scaled, image_rect.topleft)
-
-
-def _draw_throttle_panel_buttons(screen: pygame.Surface, image_rect: pygame.Rect) -> None:
-    state = _ensure_panel_button_states()
-    throttle = state.get("THROTTLE", {})
-    if not isinstance(throttle, dict):
-        return
-    for control in _THROTTLE_PANEL_BUTTON_RULES.keys():
-        filename = _throttle_panel_button_image_filename(control, throttle)
-        if filename == "":
-            continue
-        src = _load_panel_button_image("THROTTLE", filename)
-        if src is None:
-            continue
-        draw_src = _button_image_rotated_cw_90("THROTTLE", filename, src)
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(draw_src, (sw, sh))
-        screen.blit(scaled, image_rect.topleft)
-        bbox = _button_alpha_bbox("THROTTLE", f"ROT_CW90::{filename}", draw_src)
-        if bbox is None:
-            continue
-        sx = sw / float(max(1, draw_src.get_width()))
-        sy = sh / float(max(1, draw_src.get_height()))
-        hx = image_rect.left + int(round(bbox.x * sx))
-        hy = image_rect.top + int(round(bbox.y * sy))
-        hw = max(1, int(round(bbox.width * sx)))
-        hh = max(1, int(round(bbox.height * sy)))
-        _PANEL_RUNTIME_BUTTON_HITS.append(
-            {
-                "panel": "THROTTLE",
-                "control": control,
-                "rect": pygame.Rect(hx, hy, hw, hh),
-            }
-        )
-    # Animated throttle handle overlay (non-clickable).
-    handle_src = _load_panel_button_image("THROTTLE", "THROTTLE HANDLE.png")
-    if handle_src is not None:
-        draw_src = _button_image_rotated_cw_90("THROTTLE", "THROTTLE HANDLE.png", handle_src)
-        sw = max(1, image_rect.width)
-        sh = max(1, image_rect.height)
-        scaled = pygame.transform.smoothscale(draw_src, (sw, sh))
-        try:
-            thrust = float(throttle.get("THROTTLE_POS", 0.0))
-        except Exception:
-            thrust = 0.0
-        frac = max(0.0, min(1.0, thrust / 150.0))
-        dx = int(round(THROTTLE_HANDLE_MAX_DX_PX * frac))
-        dy = int(round(THROTTLE_HANDLE_MAX_DY_PX * frac))
-        screen.blit(scaled, (image_rect.left + dx, image_rect.top + dy))
-
-
-def _set_manual_icaw_active(name: str, enabled: bool, severity_hint: Optional[str] = None) -> None:
-    alert_name = str(name).strip()
-    if alert_name == "":
-        return
-    alert_name_up = alert_name.upper()
-    state = getattr(formats, "ICAWS_STATE", {})
-    if not isinstance(state, dict):
-        return
-    active = state.get("active", [])
-    if not isinstance(active, list):
-        active = []
-    if not enabled:
-        active = [
-            item for item in active
-            if not (
-                (isinstance(item, dict) and str(item.get("text", "")).strip().upper() == alert_name_up)
-                or ((not isinstance(item, dict)) and str(item).strip().upper() == alert_name_up)
-            )
-        ]
-        state["active"] = active
-        return
-    for item in active:
-        if isinstance(item, dict) and str(item.get("text", "")).strip().upper() == alert_name_up:
-            state["active"] = active
-            return
-    sev = str(severity_hint or "").strip().lower()
-    if sev not in {"warning", "caution", "advisory"}:
-        try:
-            sev = str(getattr(formats, "ICAWS_ALERT_DEFAULT_SEVERITY", {}).get(alert_name_up, "")).strip().lower()
-        except Exception:
-            sev = ""
-    if sev not in {"warning", "caution", "advisory"}:
-        sev = "caution"
-    active.append({"text": alert_name, "severity": sev})
-    state["active"] = active
-
-
-def _set_power_panel_control(control: str, mouse_button: int, pressed: bool) -> None:
-    state = _ensure_panel_button_states()
-    power = state.get("POWER PANEL", {})
-    if not isinstance(power, dict):
-        return
-    if control in {"BAT", "ICC1", "ICC2", "ICC3"} and pressed:
-        current = str(power.get(control, "OFF")).upper()
-        next_state = "ON" if current != "ON" else "OFF"
-        power[control] = next_state
-        if next_state != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "CAB_PRESS" and pressed:
-        current = str(power.get("CAB_PRESS", "NORM")).upper()
-        next_mode = current
-        if mouse_button == 1:
-            # Left-click steps toward DUMP side: RAM -> NORM -> DUMP.
-            if current == "RAM":
-                next_mode = "NORM"
-            elif current == "NORM":
-                next_mode = "DUMP"
-            else:
-                next_mode = "DUMP"
-        elif mouse_button == 3:
-            # Right-click steps toward RAM side: DUMP -> NORM -> RAM.
-            if current == "DUMP":
-                next_mode = "NORM"
-            elif current == "NORM":
-                next_mode = "RAM"
-            else:
-                next_mode = "RAM"
-        power["CAB_PRESS"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "IPP":
-        current_mode = str(power.get("IPP", "AUTO")).upper()
-        next_mode = current_mode
-        if pressed:
-            if mouse_button == 1:
-                next_mode = "OFF"
-                _PANEL_ACTIVE_HOLDS[1] = ("POWER PANEL", "IPP")
-            elif mouse_button == 3:
-                next_mode = "START"
-                _PANEL_ACTIVE_HOLDS[3] = ("POWER PANEL", "IPP")
-        else:
-            next_mode = "AUTO"
-        power["IPP"] = next_mode
-        if next_mode != current_mode:
-            play_sound_effect("SWITCH")
-        return
-    if control == "EMER":
-        power["EMER_PRESSED"] = bool(pressed)
-        if pressed:
-            power["IPP_ON"] = False
-            power["IPP_ON_SINCE_MS"] = 0
-            power["IPP_START_HOLD_MS"] = 0
-            power["IPP_OFF_HOLD_MS"] = 0
-            power["IPP_START_SEQ_END_MS"] = 0
-            power["IPP_START_SEQ_SUCCESS"] = False
-            power["IPP_START_BLOCKED"] = False
-            power["IPP_SHUTDOWN_SEQ_END_MS"] = 0
-            power["BATT_270V_DIS_ON"] = False
-            _set_manual_icaw_active("FIRE IPP", False)
-            _set_manual_icaw_active("FPS DISCHARGE", True)
-            _PANEL_ACTIVE_HOLDS[mouse_button] = ("POWER PANEL", "EMER")
-        return
-
-
-def _set_throttle_panel_control(control: str, mouse_button: int, pressed: bool) -> None:
-    state = _ensure_panel_button_states()
-    throttle = state.get("THROTTLE", {})
-    if not isinstance(throttle, dict):
-        return
-    if control == "CANOPY":
-        if not pressed:
-            return
-        # Latched 3-position behavior (not momentary):
-        # left click steps toward DOWN, right click steps toward UP.
-        order = ["UP", "CENTER", "DOWN"]
-        current = str(throttle.get("CANOPY", "CENTER")).upper()
-        try:
-            idx = order.index(current)
-        except ValueError:
-            idx = 1
-        if mouse_button == 1:
-            idx = min(len(order) - 1, idx + 1)
-        elif mouse_button == 3:
-            idx = max(0, idx - 1)
-        next_mode = order[idx]
-        throttle["CANOPY"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "FCS_RESET":
-        current = str(throttle.get("FCS_RESET", "DOWN")).upper()
-        if pressed:
-            if mouse_button == 3:
-                next_mode = "UP"
-            else:
-                next_mode = "DOWN"
-            throttle["FCS_RESET"] = next_mode
-            _PANEL_ACTIVE_HOLDS[mouse_button] = ("THROTTLE", "FCS_RESET")
-            if next_mode == "UP":
-                throttle["RUDDER_TRIM_IN"] = 0.0
-        else:
-            next_mode = "DOWN"
-            throttle["FCS_RESET"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "ENGINE" and pressed:
-        current = str(throttle.get("ENGINE", "OFF")).upper()
-        order = ["RUN", "OFF", "MOTOR"]
-        try:
-            idx = order.index(current)
-        except ValueError:
-            idx = 1
-        if mouse_button == 1:
-            # Left click steps toward MOTOR side: RUN -> OFF -> MOTOR.
-            idx = min(len(order) - 1, idx + 1)
-        elif mouse_button == 3:
-            # Right click steps toward RUN side: MOTOR -> OFF -> RUN.
-            idx = max(0, idx - 1)
-        next_mode = order[idx]
-        throttle["ENGINE"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "RUDDER":
-        current = str(throttle.get("RUDDER", "CENTER")).upper()
-        if pressed:
-            if mouse_button == 3:
-                next_mode = "RIGHT"
-            else:
-                next_mode = "LEFT"
-            throttle["RUDDER"] = next_mode
-            _PANEL_ACTIVE_HOLDS[mouse_button] = ("THROTTLE", "RUDDER")
-        else:
-            next_mode = "CENTER"
-            throttle["RUDDER"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-    if control == "VS_BIT":
-        if pressed:
-            if bool(throttle.get("VS_BIT_RUNNING", False)):
-                _vs_bit_reset_runtime(throttle)
-                _vs_bit_set_result(throttle, "FN", ["VS BIT: ABORT-Pilot"])
-                return
-            power = state.get("POWER PANEL", {})
-            console_left = state.get("CONSOLE LEFT", {})
-            aircraft = state.get("AIRCRAFT", {})
-            if not isinstance(power, dict) or not isinstance(console_left, dict) or not isinstance(aircraft, dict):
-                _vs_bit_set_result(throttle, "FN", ["VS BIT: Not Available"])
-                return
-            start_ms = int(pygame.time.get_ticks())
-            block_reasons = _vs_bit_start_block_reasons(throttle, power, console_left, aircraft, start_ms)
-            if len(block_reasons) > 0:
-                _vs_bit_set_result(throttle, "FN", block_reasons)
-                return
-            # Allow re-run to clear previous NO GO immediately.
-            _vs_bit_set_result(throttle, "TS", [])
-            throttle["VS_BIT_PRESSED"] = True
-            throttle["VS_BIT_RUNNING"] = True
-            throttle["VS_BIT_START_MS"] = start_ms
-            throttle["VS_BIT_END_MS"] = start_ms + VS_BIT_DURATION_MS
-            throttle["VS_BIT_HOLD_THROTTLE_POS"] = float(throttle.get("THROTTLE_POS", 0.0))
-            throttle["VS_BIT_MANUAL_OVERRIDE"] = False
-            throttle["VS_BIT_REFUEL_SEEN"] = False
-            throttle["VS_BIT_THROTTLE_MOVED"] = False
-            throttle["VS_BIT_CTRL_MOVED"] = False
-            throttle["VS_BIT_ABORT_INPUT_SOURCE"] = ""
-            throttle["VS_BIT_ABORT_INPUT_DETAIL"] = ""
-            throttle["VS_BIT_HOTAS_LAST_CMD"] = None
-            throttle["VS_BIT_EXPECT_REFUEL_OPEN"] = None
-            throttle["VS_BIT_FCS_ACTIVE"] = True
-            throttle["VS_BIT_FCS_STEP_IDX"] = 0
-            throttle["VS_BIT_FCS_ACTION_DONE"] = False
-            throttle["VS_BIT_FCS_NEXT_STEP_MS"] = 0
-            # Start the automated V/S BIT throttle sweep from IDLE.
-            throttle["THROTTLE_POS"] = 0.0
-            door_sig = _weapon_door_signature(int(pygame.time.get_ticks()))
-            throttle["VS_BIT_DOOR_SIG"] = door_sig
-            throttle["VS_BIT_DOOR_MOVED"] = _vs_bit_weapon_door_no_go(door_sig)
-            _PANEL_ACTIVE_HOLDS[mouse_button] = ("THROTTLE", "VS_BIT")
-        else:
-            throttle["VS_BIT_PRESSED"] = False
-        return
-
-
-def _set_display_control_panel_control(control: str, mouse_button: int, pressed: bool) -> None:
-    if not pressed:
-        return
-    state = _ensure_panel_button_states()
-    display = state.get("DISPLAY CONTROL", {})
-    if not isinstance(display, dict):
-        return
-    if control == "BRT_DOWN":
-        level = max(1, min(10, int(display.get("BRIGHTNESS_LEVEL", 10))))
-        new_level = max(1, level - 1)
-        display["BRIGHTNESS_LEVEL"] = int(new_level)
-        if new_level != level:
-            play_sound_effect("SWITCH")
-        return
-    if control == "BRT_UP":
-        level = max(1, min(10, int(display.get("BRIGHTNESS_LEVEL", 10))))
-        new_level = min(10, level + 1)
-        display["BRIGHTNESS_LEVEL"] = int(new_level)
-        if new_level != level:
-            play_sound_effect("SWITCH")
-        return
-    if control == "MFD":
-        order = ["OFF", "NIGHT", "DAY"]
-        current = str(display.get("MFD_MODE", "DAY")).upper()
-        try:
-            idx = order.index(current)
-        except ValueError:
-            idx = 2
-        if mouse_button == 1:
-            idx = max(0, idx - 1)  # DAY -> NIGHT -> OFF
-        elif mouse_button == 3:
-            idx = min(len(order) - 1, idx + 1)  # OFF -> NIGHT -> DAY
-        next_mode = order[idx]
-        display["MFD_MODE"] = next_mode
-        if next_mode != current:
-            play_sound_effect("SWITCH")
-        return
-
-
-def _set_master_arm_panel_control(control: str, mouse_button: int, pressed: bool, pos: Optional[Tuple[int, int]] = None) -> None:
-    global _PANEL_ACTIVE_DIAL_DRAG
-    state = _ensure_panel_button_states()
-    master_arm = state.get("MASTER ARM", {})
-    if not isinstance(master_arm, dict):
-        return
-    if control == "MASTER_ARM":
-        if not pressed:
-            return
-        current = str(master_arm.get("MASTER_ARM", "OFF")).upper()
-        next_state = "ON" if current != "ON" else "OFF"
-        master_arm["MASTER_ARM"] = next_state
-        if next_state != current:
-            play_sound_effect("SWITCH")
-        return
-    if control in {"DIAL_A", "DIAL_B", "DIAL_C"}:
-        if pressed and pos is not None:
-            _PANEL_ACTIVE_DIAL_DRAG = {
-                "control": control,
-                "button": int(mouse_button),
-                "start_x": int(pos[0]),
-                "start_y": int(pos[1]),
-                "start_value": int(max(0, min(10, int(master_arm.get(control, 5))))),
-                "last_value": int(max(0, min(10, int(master_arm.get(control, 5))))),
-            }
-        else:
-            if _PANEL_ACTIVE_DIAL_DRAG is not None and str(_PANEL_ACTIVE_DIAL_DRAG.get("control", "")) == control:
-                _PANEL_ACTIVE_DIAL_DRAG = None
-        return
-
-
-def _set_console_left_panel_control(control: str, mouse_button: int, pressed: bool) -> None:
-    if not pressed:
-        return
-    state = _ensure_panel_button_states()
-    console_left = state.get("CONSOLE LEFT", {})
-    if not isinstance(console_left, dict):
-        return
-    if control == "PARKING_BRAKE":
-        if mouse_button not in {1, 3}:
-            return
-        current = str(console_left.get("PARKING_BRAKE", "ON")).upper()
-        next_state = "OFF" if current == "ON" else "ON"
-        console_left["PARKING_BRAKE"] = next_state
-        play_sound_effect("SWITCH")
-        return
-    if control == "GEAR":
-        if mouse_button not in {1, 3}:
-            return
-        # GEAR FAIL latches handle and blocks all manual movement.
-        if _active_icaw_has("GEAR FAIL"):
-            return
-        current = str(console_left.get("GEAR", "DOWN_OFF")).upper()
-        if current.startswith("UP"):
-            next_state = "DOWN_ON"
-        else:
-            aircraft = state.get("AIRCRAFT", {})
-            try:
-                airspeed_kts = float(aircraft.get("AIRSPEED_KTS", 0.0)) if isinstance(aircraft, dict) else 0.0
-            except Exception:
-                airspeed_kts = 0.0
-            # Gear handle may only be raised once past 150 kts.
-            if airspeed_kts <= GEAR_UP_MIN_AIRSPEED_KTS:
-                return
-            next_state = "UP_ON"
-        console_left["GEAR"] = next_state
-        now_ms = int(pygame.time.get_ticks())
-        transition_dir = "UP" if next_state.startswith("UP") else "DOWN"
-        # FIRE GEAR keeps handle in ON state while active.
-        if _active_icaw_has("FIRE GEAR"):
-            console_left["GEAR_TRANSITION_DUE_MS"] = 0
-            console_left["GEAR_TRANSITION_START_MS"] = 0
-            console_left["GEAR_TRANSITION_DIR"] = ""
-            console_left["GEAR_TRANSITION_DURATION_MS"] = 0
-        else:
-            transition_ms = int(random.randint(CONSOLE_LEFT_GEAR_TRANSITION_MIN_MS, CONSOLE_LEFT_GEAR_TRANSITION_MAX_MS))
-            console_left["GEAR_TRANSITION_DUE_MS"] = now_ms + transition_ms
-            console_left["GEAR_TRANSITION_START_MS"] = now_ms
-            console_left["GEAR_TRANSITION_DIR"] = transition_dir
-            console_left["GEAR_TRANSITION_DURATION_MS"] = transition_ms
-        play_sound_effect("SWITCH")
-        return
-    if control == "JETT":
-        order = ["EXT", "SEL", "ALL"]
-        current = str(console_left.get("JETT", "EXT")).upper()
-        try:
-            idx = order.index(current)
-        except ValueError:
-            idx = 0
-        if mouse_button == 3:
-            idx = min(len(order) - 1, idx + 1)
-            next_mode = order[idx]
-            console_left["JETT"] = next_mode
-            if next_mode != current:
-                play_sound_effect("SWITCH")
-            return
-        if mouse_button == 1:
-            idx = max(0, idx - 1)
-            next_mode = order[idx]
-            console_left["JETT"] = next_mode
-            if next_mode != current:
-                play_sound_effect("SWITCH")
-            return
-        if mouse_button == 2:
-            try:
-                console_left["JETT_ACTIVATE_COUNT"] = int(console_left.get("JETT_ACTIVATE_COUNT", 0)) + 1
-            except Exception:
-                console_left["JETT_ACTIVATE_COUNT"] = 1
-            console_left["JETT_LAST_ACTIVATE_MS"] = int(pygame.time.get_ticks())
-            play_sound_effect("SWITCH")
-            return
-
-
-def _handle_panel_popup_mouse_drag(pos: Tuple[int, int], buttons: int) -> None:
-    global _PANEL_ACTIVE_DIAL_DRAG
-    drag = _PANEL_ACTIVE_DIAL_DRAG
-    if not isinstance(drag, dict):
-        return
-    try:
-        button = int(drag.get("button", 1))
-    except Exception:
-        button = 1
-    if button == 1 and not (buttons & 1):
-        _PANEL_ACTIVE_DIAL_DRAG = None
-        return
-    if button == 3 and not (buttons & 2):
-        _PANEL_ACTIVE_DIAL_DRAG = None
-        return
-    control = str(drag.get("control", ""))
-    if control not in {"DIAL_A", "DIAL_B", "DIAL_C"}:
-        _PANEL_ACTIVE_DIAL_DRAG = None
-        return
-    try:
-        sx = int(drag.get("start_x", int(pos[0])))
-        sy = int(drag.get("start_y", int(pos[1])))
-        base = int(drag.get("start_value", 5))
-    except Exception:
-        sx, sy, base = int(pos[0]), int(pos[1]), 5
-    dx = int(pos[0]) - sx
-    dy = int(pos[1]) - sy
-    travel = dx if abs(dx) >= abs(dy) else -dy
-    # Inverted drag polarity per panel request.
-    delta = -int(round(travel / 22.0))
-    new_val = max(0, min(10, base + delta))
-    state = _ensure_panel_button_states()
-    master_arm = state.get("MASTER ARM", {})
-    if not isinstance(master_arm, dict):
-        return
-    prev_val = int(max(0, min(10, int(master_arm.get(control, base)))))
-    master_arm[control] = int(new_val)
-    if new_val != prev_val:
-        play_sound_effect("SWITCH")
-    drag["last_value"] = int(new_val)
-
-
-def _display_control_brightness_multiplier() -> float:
-    state = _ensure_panel_button_states()
-    display = state.get("DISPLAY CONTROL", {})
-    if not isinstance(display, dict):
-        return 1.0
-    mode = str(display.get("MFD_MODE", "DAY")).upper()
-    if mode == "OFF":
-        return 0.0
-    try:
-        level = int(display.get("BRIGHTNESS_LEVEL", 10))
-    except Exception:
-        level = 10
-    level = max(1, min(10, level))
-    mult = float(level) / 10.0
-    if mode == "NIGHT":
-        mult *= 0.75
-    return max(0.0, min(1.0, mult))
-
-
-def _is_refuel_door_open() -> bool:
-    try:
-        return bool(getattr(formats.FuelFormat, "_shared_refuel_t2_on", False)) or bool(getattr(formats.FuelFormat, "_shared_hazard_on", {}).get("R6", False))
-    except Exception:
-        return False
-
-
-def _is_mf_sov_on() -> bool:
-    try:
-        return bool(getattr(formats.FuelFormat, "_shared_hazard_on", {}).get("L6", False))
-    except Exception:
-        return False
-
-
-def _active_icaw_alerts() -> List[Tuple[str, str]]:
-    try:
-        raw = getattr(formats, "get_current_icaws_alerts", lambda: [])()
-    except Exception:
-        raw = []
-    out: List[Tuple[str, str]] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            name = str(item[0]).strip().upper()
-            sev = str(item[1]).strip().lower()
-            if name == "" or sev == "":
-                continue
-            out.append((name, sev))
-    return out
-
-
-def _active_icaw_names() -> set[str]:
-    return {name for name, _ in _active_icaw_alerts()}
-
-
-def _active_icaw_name_to_severity() -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    rank = {"warning": 0, "caution": 1, "advisory": 2}
-    for name, sev in _active_icaw_alerts():
-        prev = out.get(name, "")
-        if prev == "":
-            out[name] = sev
-            continue
-        if rank.get(sev, 99) < rank.get(prev, 99):
-            out[name] = sev
-    return out
-
-
-def _active_icaw_has(name: str) -> bool:
-    target = str(name).strip().upper()
-    if target == "":
-        return False
-    return target in _active_icaw_names()
-
-
-def _active_icaw_display_degd_side() -> str:
-    """
-    Returns "LEFT", "RIGHT", "BOTH", or "" based on active DISPLAY DEGD
-    bindings (PCD_L / PCD_R) emitted by formats ICAWS runtime.
-    """
-    key_candidates = (
-        "DISPLAY DEGD|caution",
-        "DISPLAY DEGD|warning",
-        "DISPLAY DEGD|advisory",
-    )
-    try:
-        bindings = getattr(formats, "ICAWS_STATE", {}).get("hrc_bindings", {})
-    except Exception:
-        bindings = {}
-    if not isinstance(bindings, dict):
-        bindings = {}
-
-    left = False
-    right = False
-    for key in key_candidates:
-        bind = bindings.get(key, {})
-        if not isinstance(bind, dict):
-            continue
-        targets = bind.get("targets", [])
-        if not isinstance(targets, list):
-            continue
-        for tgt in targets:
-            name = str(tgt).strip().upper()
-            if name == "PCD_L":
-                left = True
-            elif name == "PCD_R":
-                right = True
-    if left and right:
-        return "BOTH"
-    if left:
-        return "LEFT"
-    if right:
-        return "RIGHT"
-    return ""
-
-
-def _weapon_door_signature(now_ms: int) -> str:
-    try:
-        sms = getattr(formats, "SMS_STATE", {})
-        if not isinstance(sms, dict):
-            return "CLOSE|CLOSE|CLOSE|CLOSE|0|0"
-        lt_state = str(sms.get("lt_state", "CLOSE")).upper()
-        rt_state = str(sms.get("rt_state", "CLOSE")).upper()
-        lt_target = str(sms.get("lt_target", "CLOSE")).upper()
-        rt_target = str(sms.get("rt_target", "CLOSE")).upper()
-        lt_due = int(sms.get("lt_transition_due_ms", 0))
-        rt_due = int(sms.get("rt_transition_due_ms", 0))
-        lt_moving = 1 if lt_state == "PARTIAL" or lt_target != lt_state or lt_due > int(now_ms) else 0
-        rt_moving = 1 if rt_state == "PARTIAL" or rt_target != rt_state or rt_due > int(now_ms) else 0
-        return f"{lt_state}|{rt_state}|{lt_target}|{rt_target}|{lt_moving}|{rt_moving}"
-    except Exception:
-        return "CLOSE|CLOSE|CLOSE|CLOSE|0|0"
-
-
-def _vs_bit_weapon_door_no_go(sig: str) -> bool:
-    parts = [str(p).strip().upper() for p in str(sig).split("|")]
-    if len(parts) < 6:
-        return False
-    lt_state, rt_state, lt_target, rt_target, lt_moving, rt_moving = parts[:6]
-    closed = any(x.startswith("CLOSE") for x in (lt_state, rt_state, lt_target, rt_target))
-    moving = (lt_moving == "1") or (rt_moving == "1")
-    return bool(closed or moving)
-
-
-def _clamp_fcs(v: float, lo: float, hi: float) -> float:
-    return max(float(lo), min(float(hi), float(v)))
-
-
-def _step_toward(current: float, target: float, max_step: float) -> float:
-    cur = float(current)
-    tgt = float(target)
-    step = max(0.0, float(max_step))
-    if cur < tgt:
-        return min(cur + step, tgt)
-    if cur > tgt:
-        return max(cur - step, tgt)
-    return cur
-
-
-def _vec_dot3(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> float:
-    return (float(a[0]) * float(b[0])) + (float(a[1]) * float(b[1])) + (float(a[2]) * float(b[2]))
-
-
-def _vec_cross3(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    return (
-        (float(a[1]) * float(b[2])) - (float(a[2]) * float(b[1])),
-        (float(a[2]) * float(b[0])) - (float(a[0]) * float(b[2])),
-        (float(a[0]) * float(b[1])) - (float(a[1]) * float(b[0])),
-    )
-
-
-def _vec_norm3(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    x = float(v[0])
-    y = float(v[1])
-    z = float(v[2])
-    n = math.sqrt((x * x) + (y * y) + (z * z))
-    if n <= 1e-12:
-        return (0.0, 0.0, 0.0)
-    inv = 1.0 / n
-    return (x * inv, y * inv, z * inv)
-
-
-def _quat_normalize(q: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
-    w = float(q[0])
-    x = float(q[1])
-    y = float(q[2])
-    z = float(q[3])
-    n = math.sqrt((w * w) + (x * x) + (y * y) + (z * z))
-    if n <= 1e-12:
-        return (1.0, 0.0, 0.0, 0.0)
-    inv = 1.0 / n
-    return (w * inv, x * inv, y * inv, z * inv)
-
-
-def _quat_mul(
-    q1: Tuple[float, float, float, float],
-    q2: Tuple[float, float, float, float],
-) -> Tuple[float, float, float, float]:
-    w1, x1, y1, z1 = float(q1[0]), float(q1[1]), float(q1[2]), float(q1[3])
-    w2, x2, y2, z2 = float(q2[0]), float(q2[1]), float(q2[2]), float(q2[3])
-    return (
-        (w1 * w2) - (x1 * x2) - (y1 * y2) - (z1 * z2),
-        (w1 * x2) + (x1 * w2) + (y1 * z2) - (z1 * y2),
-        (w1 * y2) - (x1 * z2) + (y1 * w2) + (z1 * x2),
-        (w1 * z2) + (x1 * y2) - (y1 * x2) + (z1 * w2),
-    )
-
-
-def _quat_conjugate(q: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
-    return (float(q[0]), -float(q[1]), -float(q[2]), -float(q[3]))
-
-
-def _quat_from_axis_angle(axis: Tuple[float, float, float], angle_rad: float) -> Tuple[float, float, float, float]:
-    ax, ay, az = float(axis[0]), float(axis[1]), float(axis[2])
-    n = math.sqrt((ax * ax) + (ay * ay) + (az * az))
-    if n <= 1e-12 or abs(float(angle_rad)) <= 1e-12:
-        return (1.0, 0.0, 0.0, 0.0)
-    half = 0.5 * float(angle_rad)
-    s = math.sin(half) / n
-    return _quat_normalize((math.cos(half), ax * s, ay * s, az * s))
-
-
-def _quat_rotate_vec(
-    q: Tuple[float, float, float, float],
-    v: Tuple[float, float, float],
-) -> Tuple[float, float, float]:
-    # Fast quaternion-vector rotation: v' = v + w*t + cross(q_vec, t), t=2*cross(q_vec,v)
-    w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
-    tx = 2.0 * ((y * vz) - (z * vy))
-    ty = 2.0 * ((z * vx) - (x * vz))
-    tz = 2.0 * ((x * vy) - (y * vx))
-    return (
-        vx + (w * tx) + ((y * tz) - (z * ty)),
-        vy + (w * ty) + ((z * tx) - (x * tz)),
-        vz + (w * tz) + ((x * ty) - (y * tx)),
-    )
-
-
-def _quat_from_basis(
-    right: Tuple[float, float, float],
-    forward: Tuple[float, float, float],
-    up: Tuple[float, float, float],
-) -> Tuple[float, float, float, float]:
-    # Rotation matrix columns are body axes expressed in world space:
-    # X/right, Y/forward, Z/up.
-    m00, m10, m20 = float(right[0]), float(right[1]), float(right[2])
-    m01, m11, m21 = float(forward[0]), float(forward[1]), float(forward[2])
-    m02, m12, m22 = float(up[0]), float(up[1]), float(up[2])
-    trace = m00 + m11 + m22
-    if trace > 0.0:
-        s = math.sqrt(trace + 1.0) * 2.0
-        w = 0.25 * s
-        x = (m21 - m12) / s
-        y = (m02 - m20) / s
-        z = (m10 - m01) / s
-    elif m00 > m11 and m00 > m22:
-        s = math.sqrt(max(1e-12, 1.0 + m00 - m11 - m22)) * 2.0
-        w = (m21 - m12) / s
-        x = 0.25 * s
-        y = (m01 + m10) / s
-        z = (m02 + m20) / s
-    elif m11 > m22:
-        s = math.sqrt(max(1e-12, 1.0 + m11 - m00 - m22)) * 2.0
-        w = (m02 - m20) / s
-        x = (m01 + m10) / s
-        y = 0.25 * s
-        z = (m12 + m21) / s
-    else:
-        s = math.sqrt(max(1e-12, 1.0 + m22 - m00 - m11)) * 2.0
-        w = (m10 - m01) / s
-        x = (m02 + m20) / s
-        y = (m12 + m21) / s
-        z = 0.25 * s
-    return _quat_normalize((w, x, y, z))
-
-
-def _quat_body_rates_dps(
-    q_prev: Tuple[float, float, float, float],
-    q_curr: Tuple[float, float, float, float],
-    dt_sec: float,
-) -> Tuple[float, float, float]:
-    dt = float(dt_sec)
-    if dt <= 1e-9:
-        return (0.0, 0.0, 0.0)
-    # q_curr = q_prev * dq_body -> dq_body = conj(q_prev) * q_curr
-    dq = _quat_mul(_quat_conjugate(_quat_normalize(q_prev)), _quat_normalize(q_curr))
-    dq = _quat_normalize(dq)
-    w, x, y, z = float(dq[0]), float(dq[1]), float(dq[2]), float(dq[3])
-    if w < 0.0:
-        w, x, y, z = -w, -x, -y, -z
-    v_norm = math.sqrt((x * x) + (y * y) + (z * z))
-    if v_norm <= 1e-12:
-        return (0.0, 0.0, 0.0)
-    angle = 2.0 * math.atan2(v_norm, max(-1.0, min(1.0, w)))
-    if angle > math.pi:
-        angle -= (2.0 * math.pi)
-    inv_v = 1.0 / v_norm
-    ax, ay, az = x * inv_v, y * inv_v, z * inv_v
-    scale = (180.0 / math.pi) * (angle / dt)
-    # Body axes mapping in this sim:
-    #   X = pitch, Y = roll, Z = yaw
-    return (ax * scale, az * scale, ay * scale)
-
-
-def _sync_fcs_control_overlay_state(throttle: Dict[str, object], aircraft: Dict[str, object]) -> None:
-    max_defl = max(1e-6, float(FLIGHT_CONTROL_MAX_DEG))
-
-    def _norm(key: str) -> float:
-        return _clamp_fcs(float(aircraft.get(key, 0.0)) / max_defl, -1.0, 1.0)
-
-    try:
-        trim_in = float(throttle.get("RUDDER_TRIM_IN", 0.0))
-    except Exception:
-        trim_in = 0.0
-    trim_in = _clamp_fcs(trim_in, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-
-    top_x_in = _clamp_fcs(_norm("r_aileron") * FCS_SYMBOL_MAX_OFFSET_IN, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-    top_y_in = _clamp_fcs(-_norm("l_elevator") * FCS_SYMBOL_MAX_OFFSET_IN, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-    rud_cmd_norm = (_norm("l_rudder") + _norm("r_rudder")) * 0.5
-    rud_cmd_in = _clamp_fcs(rud_cmd_norm * FCS_SYMBOL_MAX_OFFSET_IN, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-    bottom_cyan_x_in = _clamp_fcs(trim_in + rud_cmd_in, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-
-    throttle["RUDDER_TRIM_IN"] = float(trim_in)
-    aircraft["fcs_top_cyan_x_in"] = float(top_x_in)
-    aircraft["fcs_top_cyan_y_in"] = float(top_y_in)
-    aircraft["fcs_bottom_cyan_x_in"] = float(bottom_cyan_x_in)
-    aircraft["fcs_rudder_trim_in"] = float(trim_in)
-    try:
-        formats.FCS_STATE["top_cyan_x_in"] = float(top_x_in)
-        formats.FCS_STATE["top_cyan_y_in"] = float(top_y_in)
-        formats.FCS_STATE["bottom_cyan_x_in"] = float(bottom_cyan_x_in)
-        formats.FCS_STATE["rudder_trim_in"] = float(trim_in)
-    except Exception:
-        pass
-
-
-def _set_vs_bit_refuel_doors_open(target_open: bool) -> None:
-    try:
-        # VS BIT drives the refuel doors via R6; keep T2 path disabled here.
-        setattr(formats.FuelFormat, "_shared_refuel_t2_on", False)
-        hazard_on = getattr(formats.FuelFormat, "_shared_hazard_on", None)
-        if isinstance(hazard_on, dict):
-            hazard_on["R6"] = bool(target_open)
-        cover_closed = getattr(formats.FuelFormat, "_shared_hazard_cover_closed", None)
-        if isinstance(cover_closed, dict):
-            cover_closed["R6"] = not bool(target_open)
-    except Exception:
-        pass
-
-
-def _force_refuel_doors_closed() -> None:
-    try:
-        setattr(formats.FuelFormat, "_shared_refuel_t2_on", False)
-        hazard_on = getattr(formats.FuelFormat, "_shared_hazard_on", None)
-        if isinstance(hazard_on, dict):
-            hazard_on["R6"] = False
-        cover_closed = getattr(formats.FuelFormat, "_shared_hazard_cover_closed", None)
-        if isinstance(cover_closed, dict):
-            cover_closed["R6"] = True
-    except Exception:
-        pass
-
-
-def _vs_bit_reset_runtime(throttle: Dict[str, object]) -> None:
-    throttle["VS_BIT_RUNNING"] = False
-    throttle["VS_BIT_PRESSED"] = False
-    throttle["VS_BIT_START_MS"] = 0
-    throttle["VS_BIT_END_MS"] = 0
-    throttle["VS_BIT_HOLD_THROTTLE_POS"] = 0.0
-    throttle["VS_BIT_MANUAL_OVERRIDE"] = False
-    throttle["VS_BIT_REFUEL_SEEN"] = False
-    throttle["VS_BIT_DOOR_MOVED"] = False
-    throttle["VS_BIT_THROTTLE_MOVED"] = False
-    throttle["VS_BIT_CTRL_MOVED"] = False
-    throttle["VS_BIT_DOOR_SIG"] = ""
-    throttle["VS_BIT_EXPECT_REFUEL_OPEN"] = None
-    throttle["VS_BIT_FCS_ACTIVE"] = False
-    throttle["VS_BIT_FCS_STEP_IDX"] = 0
-    throttle["VS_BIT_FCS_ACTION_DONE"] = False
-    throttle["VS_BIT_FCS_NEXT_STEP_MS"] = 0
-    throttle["VS_BIT_HOTAS_LAST_CMD"] = None
-    throttle["VS_BIT_ABORT_INPUT_SOURCE"] = ""
-    throttle["VS_BIT_ABORT_INPUT_DETAIL"] = ""
-    _force_refuel_doors_closed()
-
-
-def _vs_bit_reason_detail_text(reason: str, throttle: Dict[str, object]) -> str:
-    raw = str(reason).strip()
-    panel = _ensure_panel_button_states()
-    power = panel.get("POWER PANEL", {}) if isinstance(panel, dict) else {}
-    console_left = panel.get("CONSOLE LEFT", {}) if isinstance(panel, dict) else {}
-    aircraft = panel.get("AIRCRAFT", {}) if isinstance(panel, dict) else {}
-
-    try:
-        now_ms = int(pygame.time.get_ticks())
-    except Exception:
-        now_ms = 0
-
-    if raw == "VS BIT: ABORT-Pilot":
-        return "_set_throttle_panel_control(VS_BIT): pilot pressed VS BIT while it was already running."
-    if raw == "VS BIT: ABORT-HOTAS":
-        throttle_moved = bool(throttle.get("VS_BIT_THROTTLE_MOVED", False))
-        ctrl_moved = bool(throttle.get("VS_BIT_CTRL_MOVED", False))
-        source = str(throttle.get("VS_BIT_ABORT_INPUT_SOURCE", "")).strip()
-        detail = str(throttle.get("VS_BIT_ABORT_INPUT_DETAIL", "")).strip()
-        if detail == "":
-            detail = "no captured input detail"
-        return (
-            "_update_user_flight_controls(): manual input detected during VS BIT "
-            f"(THROTTLE_MOVED={throttle_moved}, CTRL_MOVED={ctrl_moved}, SOURCE={source or 'UNKNOWN'}, DETAIL={detail})."
-        )
-    if raw == "VS BIT: ABORT-Engine Off":
-        engine_mode = str(throttle.get("ENGINE", "OFF")).upper()
-        return f"VS BIT runtime loop: engine mode is {engine_mode} (expected RUN)."
-    if raw == "VS BIT: In Motion":
-        try:
-            speed = float(aircraft.get("AIRSPEED_KTS", 0.0)) if isinstance(aircraft, dict) else 0.0
-        except Exception:
-            speed = 0.0
-        return f"_vs_bit_start_block_reasons(): abs(AIRSPEED_KTS)={abs(speed):.2f} > 0.1."
-    if raw == "VS BIT: Parking Brake":
-        parking_brake = str(console_left.get("PARKING_BRAKE", "ON")).upper() if isinstance(console_left, dict) else "ON"
-        return f"_vs_bit_start_block_reasons(): PARKING_BRAKE={parking_brake} (expected ON)."
-    if raw == "VS BIT: Fuel-Def Vlv Open":
-        return f"_vs_bit_start_block_reasons(): _is_refuel_door_open()={bool(_is_refuel_door_open())}."
-    if raw == "VS BIT: ETR to Idle":
-        try:
-            throttle_pos = float(throttle.get("THROTTLE_POS", 0.0))
-        except Exception:
-            throttle_pos = 0.0
-        return f"_vs_bit_start_block_reasons(): THROTTLE_POS={throttle_pos:.2f} > 1.0 while engine ready."
-    if raw == "VS BIT: Pilot Delay":
-        engine_mode = str(throttle.get("ENGINE", "OFF")).upper()
-        spool_mode = str(throttle.get("ENGINE_SPOOL_MODE", "OFF")).upper()
-        try:
-            spool = float(throttle.get("ENGINE_SPOOL", 0.0))
-        except Exception:
-            spool = 0.0
-        idle_since = int(throttle.get("VS_BIT_IDLE_SINCE_MS", 0))
-        idle_elapsed = max(0, now_ms - idle_since) if idle_since > 0 else 0
-        engine_ready = bool(engine_mode == "RUN" and spool_mode == "RUN" and spool >= 0.99)
-        if not engine_ready:
-            return (
-                "_vs_bit_start_block_reasons(): engine not ready "
-                f"(ENGINE={engine_mode}, ENGINE_SPOOL_MODE={spool_mode}, ENGINE_SPOOL={spool:.3f})."
-            )
-        return (
-            "_vs_bit_start_block_reasons(): idle stability timer not met "
-            f"(idle_elapsed_ms={idle_elapsed}, required_ms={VS_BIT_IDLE_STABLE_REQUIRED_MS})."
-        )
-    if raw == "VS BIT: FAIL-FLCS":
-        refuel_seen = bool(throttle.get("VS_BIT_REFUEL_SEEN", False))
-        door_moved = bool(throttle.get("VS_BIT_DOOR_MOVED", False))
-        return (
-            "VS BIT finalization: refuel/weapon-door condition triggered "
-            f"(VS_BIT_REFUEL_SEEN={refuel_seen}, VS_BIT_DOOR_MOVED={door_moved})."
-        )
-    if raw == "VS BIT: Not Available":
-        bat_active = bool(power.get("BAT_ACTIVE", False)) if isinstance(power, dict) else False
-        return f"_vs_bit_start_block_reasons(): BAT_ACTIVE={bat_active}."
-
-    reason_to_system = {
-        "VS BIT: FAIL-FLCS": "FCS",
-        "VS BIT: FAIL-Fuel": "FUEL",
-        "VS BIT: FAIL-FPS": "FPS",
-        "VS BIT: FAIL-HUA": "HYD",
-        "VS BIT: FAIL-LGS": "GEAR",
-        "VS BIT: FAIL-Prop": "PROP",
-        "VS BIT: FAIL-PTMS": "PTMS",
-    }
-    if raw in reason_to_system:
-        system_name = reason_to_system[raw]
-        status_map = _vs_bit_vehicle_status_map()
-        status = str(status_map.get(system_name, "")).upper()
-        phm_status = panel.get("PHM STATUS", {}) if isinstance(panel, dict) else {}
-        hrc_events = phm_status.get("hrc_events", {}) if isinstance(phm_status, dict) else {}
-        fna_events = phm_status.get("fna_events", {}) if isinstance(phm_status, dict) else {}
-        subsystem_keys = []
-        try:
-            subsystem_keys = list(getattr(formats, "PHM_SYSTEM_SUBSYSTEMS", {}).get(system_name, []))
-        except Exception:
-            subsystem_keys = []
-        event_keys = [system_name] + [str(x) for x in subsystem_keys]
-        active_hrc: Dict[str, List[str]] = {}
-        active_fna: Dict[str, List[str]] = {}
-        if isinstance(hrc_events, dict):
-            for key in event_keys:
-                vals = hrc_events.get(key, [])
-                if isinstance(vals, list):
-                    clean_vals = [str(v).strip() for v in vals if str(v).strip() != ""]
-                    if len(clean_vals) > 0:
-                        active_hrc[str(key)] = clean_vals
-        if isinstance(fna_events, dict):
-            for key in event_keys:
-                vals = fna_events.get(key, [])
-                if isinstance(vals, list):
-                    clean_vals = [str(v).strip() for v in vals if str(v).strip() != ""]
-                    if len(clean_vals) > 0:
-                        active_fna[str(key)] = clean_vals
-        return (
-            "_vs_bit_collect_system_fail_reasons(): "
-            f"{system_name} status is '{status}' (bad statuses: HR, ??, NC, OF); "
-            f"active_hrc={active_hrc}; active_fna={active_fna}."
-        )
-    reason_icaw_sources: Dict[str, List[str]] = {
-        "VS BIT: No EHA 270V": ["BATT FAIL 270V", "EPS FAIL 270V"],
-        "VS BIT: FAIL-PTMS": ["BLD LEAK ENG", "BLD LEAK IPP"],
-        "VS BIT: FAIL-Prop": ["ENG COMM FAIL", "ENG FADEC FAIL", "FLAMEOUT"],
-        "VS BIT: EHA Temp-HOT": ["FCS CH HOT A", "FCS CH HOT B", "FCS CH HOT C"],
-        "VS BIT: FAIL-FPS": ["FIRE CM BAY", "FIRE ENG", "FIRE GEAR", "FIRE IPP", "FIRE WPN BAY L", "FIRE WPN BAY R", "FPS DETECT DEGD"],
-        "VS BIT: FAIL-Fuel": ["FUEL DEGD", "FUEL DUMP OPEN", "REFUEL DOOR"],
-        "VS BIT: No HYD A-HTCA": ["HYD FAIL A", "HYD FLUID A"],
-        "VS BIT: No HYD B-NWS": ["HYD FAIL B", "HYD FLUID B"],
-        "VS BIT: NWS Out of Range": ["NWS FAIL"],
-        "VS BIT: Stick Passive": ["STICK JAMMED"],
-        "VS BIT: Throttle Passive": ["THROTTLE JAMMED"],
-    }
-    if raw in reason_icaw_sources:
-        active = _active_icaw_names()
-        src = [name for name in reason_icaw_sources[raw] if name in active]
-        return f"_vs_bit_collect_system_fail_reasons(): active ICAW triggers={src}."
-    return "No additional detail available."
-
-
-def _vs_bit_log_no_go_reasons(throttle: Dict[str, object], reasons: List[str]) -> None:
-    clean_reasons = [str(r).strip() for r in reasons if str(r).strip() != ""]
-    if len(clean_reasons) <= 0:
-        return
-    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    print(f"[{stamp}] [VS BIT][ERROR] NO GO ({len(clean_reasons)} reason(s))")
-    for idx, reason in enumerate(clean_reasons, start=1):
-        detail = _vs_bit_reason_detail_text(reason, throttle)
-        print(f"[{stamp}] [VS BIT][ERROR] {idx}. {reason} :: {detail}")
-
-
-def _vs_bit_set_result(throttle: Dict[str, object], status: str, reasons: Optional[List[str]] = None) -> None:
-    s = str(status).upper()
-    if s not in {"OK", "TS", "FN"}:
-        s = "FN"
-    clean_reasons = [str(r) for r in (reasons or []) if str(r).strip() != ""]
-    clean_reasons = list(dict.fromkeys(clean_reasons))
-    throttle["VS_BIT_STATUS"] = s
-    throttle["VS_BIT_FAIL_REASONS"] = clean_reasons
-    throttle["VS_BIT_NO_GO"] = bool(s == "FN")
-    throttle["VS_BIT_LAST_RESULT_MS"] = int(pygame.time.get_ticks())
-    throttle["VS_BIT_REASON_CATALOG"] = list(clean_reasons)
-    if s == "FN":
-        _vs_bit_log_no_go_reasons(throttle, clean_reasons)
-
-
-def _vs_bit_vehicle_status_map() -> Dict[str, str]:
-    try:
-        rows = formats.PhmFormat._vehicle_systems()
-    except Exception:
-        rows = []
-    out: Dict[str, str] = {}
-    if isinstance(rows, list):
-        for item in rows:
-            if not isinstance(item, tuple) or len(item) < 2:
-                continue
-            out[str(item[0]).upper()] = str(item[1]).upper()
-    return out
-
-
-def _vs_bit_collect_system_fail_reasons() -> List[str]:
-    bad_status = {"HR", "??", "NC", "OF"}
-    system_reason_map = {
-        "FCS": "VS BIT: FAIL-FLCS",
-        "FUEL": "VS BIT: FAIL-Fuel",
-        "FPS": "VS BIT: FAIL-FPS",
-        "HYD": "VS BIT: FAIL-HUA",
-        "GEAR": "VS BIT: FAIL-LGS",
-        "PROP": "VS BIT: FAIL-Prop",
-        "PTMS": "VS BIT: FAIL-PTMS",
-    }
-    status_map = _vs_bit_vehicle_status_map()
-    reasons: List[str] = []
-    for sys_name, reason in system_reason_map.items():
-        status = str(status_map.get(sys_name, "")).upper()
-        if status in bad_status:
-            reasons.append(reason)
-
-    # Explicit ICAW-driven NO GO mappings.
-    icaw_reason_map = {
-        "BATT FAIL 270V": "VS BIT: No EHA 270V",
-        "BLD LEAK ENG": "VS BIT: FAIL-PTMS",
-        "BLD LEAK IPP": "VS BIT: FAIL-PTMS",
-        "ENG COMM FAIL": "VS BIT: FAIL-Prop",
-        "ENG FADEC FAIL": "VS BIT: FAIL-Prop",
-        "EPS FAIL 270V": "VS BIT: No EHA 270V",
-        "FCS CG DEGD": "VS BIT: FAIL-FLCS",
-        "FCS CH FAIL A": "VS BIT: FAIL-FLCS",
-        "FCS CH FAIL B": "VS BIT: FAIL-FLCS",
-        "FCS CH FAIL C": "VS BIT: FAIL-FLCS",
-        "FCS CH HOT A": "VS BIT: EHA Temp-HOT",
-        "FCS CH HOT B": "VS BIT: EHA Temp-HOT",
-        "FCS CH HOT C": "VS BIT: EHA Temp-HOT",
-        "FCS DATA FAIL": "VS BIT: FAIL-FLCS",
-        "FCS SURFACE FAIL": "VS BIT: FAIL-FLCS",
-        "FIRE CM BAY": "VS BIT: FAIL-FPS",
-        "FIRE ENG": "VS BIT: FAIL-FPS",
-        "FIRE GEAR": "VS BIT: FAIL-FPS",
-        "FIRE IPP": "VS BIT: FAIL-FPS",
-        "FIRE WPN BAY L": "VS BIT: FAIL-FPS",
-        "FIRE WPN BAY R": "VS BIT: FAIL-FPS",
-        "FLAMEOUT": "VS BIT: FAIL-Prop",
-        "FPS DETECT DEGD": "VS BIT: FAIL-FPS",
-        "FUEL DEGD": "VS BIT: FAIL-Fuel",
-        "FUEL DUMP OPEN": "VS BIT: FAIL-Fuel",
-        "HYD FAIL A": "VS BIT: No HYD A-HTCA",
-        "HYD FAIL B": "VS BIT: No HYD B-NWS",
-        "HYD FLUID A": "VS BIT: No HYD A-HTCA",
-        "HYD FLUID B": "VS BIT: No HYD B-NWS",
-        "NWS FAIL": "VS BIT: NWS Out of Range",
-        "REFUEL DOOR": "VS BIT: FAIL-Fuel",
-        "RUDDER FAIL DUAL": "VS BIT: FAIL-FLCS",
-        "RUDDER FAIL FUAL": "VS BIT: FAIL-FLCS",
-        "STAB FAIL": "VS BIT: FAIL-FLCS",
-        "STICK JAMMED": "VS BIT: Stick Passive",
-        "THROTTLE JAMMED": "VS BIT: Throttle Passive",
-    }
-    active = _active_icaw_names()
-    for icaw_name, reason in icaw_reason_map.items():
-        if icaw_name in active:
-            reasons.append(reason)
-    return reasons
-
-
-def _vs_bit_start_block_reasons(
-    throttle: Dict[str, object],
-    power: Dict[str, object],
-    console_left: Dict[str, object],
-    aircraft: Dict[str, object],
-    now_ms: int,
-) -> List[str]:
-    if not bool(power.get("BAT_ACTIVE", False)):
-        return ["VS BIT: Not Available"]
-    engine_mode = str(throttle.get("ENGINE", "OFF")).upper()
-    spool_mode = str(throttle.get("ENGINE_SPOOL_MODE", "OFF")).upper()
-    try:
-        spool = float(throttle.get("ENGINE_SPOOL", 0.0))
-    except Exception:
-        spool = 0.0
-    try:
-        throttle_pos = float(throttle.get("THROTTLE_POS", 0.0))
-    except Exception:
-        throttle_pos = 0.0
-    try:
-        speed = float(aircraft.get("AIRSPEED_KTS", 0.0))
-    except Exception:
-        speed = 0.0
-    parking_brake = str(console_left.get("PARKING_BRAKE", "ON")).upper()
-    reasons: List[str] = []
-    if abs(speed) > 0.1:
-        reasons.append("VS BIT: In Motion")
-    if parking_brake != "ON":
-        reasons.append("VS BIT: Parking Brake")
-    if bool(_is_refuel_door_open()):
-        reasons.append("VS BIT: Fuel-Def Vlv Open")
-
-    engine_ready = bool(engine_mode == "RUN" and spool_mode == "RUN" and spool >= 0.99)
-    if not engine_ready:
-        reasons.append("VS BIT: Pilot Delay")
-    elif throttle_pos > 1.0:
-        reasons.append("VS BIT: ETR to Idle")
-    else:
-        idle_since = int(throttle.get("VS_BIT_IDLE_SINCE_MS", 0))
-        if idle_since <= 0 or (now_ms - idle_since) < VS_BIT_IDLE_STABLE_REQUIRED_MS:
-            reasons.append("VS BIT: Pilot Delay")
-    return list(dict.fromkeys(reasons))
-
-
-def _update_user_flight_controls(
-    throttle: Dict[str, object],
-    aircraft: Dict[str, object],
-    held_keys: Optional[set[int]],
-    dt_sec: float,
-    hotas_axes: Optional[Dict[str, float]] = None,
-) -> None:
-    keys = held_keys if isinstance(held_keys, set) else set()
-    rate_step = max(0.0, float(FLIGHT_CONTROL_MOVE_RATE_DPS) * max(0.0, float(dt_sec)))
-    vs_bit_running = bool(throttle.get("VS_BIT_RUNNING", False))
-
-    def _held(name: str) -> bool:
-        return any(int(k) in keys for k in _FLIGHT_CTRL_MANUAL_KEYS.get(name, ()))
-
-    elev_up = _held("elev_up")
-    elev_down = _held("elev_down")
-    ail_left = _held("ail_left")
-    ail_right = _held("ail_right")
-    rud_left = _held("rud_left")
-    rud_right = _held("rud_right")
-    axes = hotas_axes if isinstance(hotas_axes, dict) else {}
-    try:
-        axis_pitch = float(axes.get("pitch", 0.0))
-    except Exception:
-        axis_pitch = 0.0
-    try:
-        axis_yaw = float(axes.get("yaw", 0.0))
-    except Exception:
-        axis_yaw = 0.0
-    try:
-        axis_roll = float(axes.get("roll", 0.0))
-    except Exception:
-        axis_roll = 0.0
-    axis_pitch = max(-1.0, min(1.0, axis_pitch))
-    axis_yaw = max(-1.0, min(1.0, axis_yaw))
-    axis_roll = max(-1.0, min(1.0, axis_roll))
-    axis_dead = float(VS_BIT_CONTROL_ABORT_DEADZONE if vs_bit_running else 0.08)
-    pitch_axis_active = abs(axis_pitch) > axis_dead
-    yaw_axis_active = abs(axis_yaw) > axis_dead
-    roll_axis_active = abs(axis_roll) > axis_dead
-    stick_jammed = _active_icaw_has("STICK JAMMED")
-    stab_fail = _active_icaw_has("STAB FAIL")
-    rudder_fail_dual = _active_icaw_has("RUDDER FAIL DUAL") or _active_icaw_has("RUDDER FAIL FUAL")
-    block_elev = bool(stick_jammed or stab_fail)
-    block_ail = bool(stick_jammed)
-    block_rud = bool(rudder_fail_dual)
-    if stick_jammed:
-        elev_up = False
-        elev_down = False
-        ail_left = False
-        ail_right = False
-    elif stab_fail:
-        elev_up = False
-        elev_down = False
-    if rudder_fail_dual:
-        rud_left = False
-        rud_right = False
-    any_manual = bool(elev_up or elev_down or ail_left or ail_right or rud_left or rud_right)
-    if pitch_axis_active or yaw_axis_active or roll_axis_active:
-        any_manual = True
-    max_defl = float(FLIGHT_CONTROL_MAX_DEG)
-    if vs_bit_running and any_manual:
-        keys_down: List[str] = []
-        if elev_up:
-            keys_down.append("ELEV_UP")
-        if elev_down:
-            keys_down.append("ELEV_DOWN")
-        if ail_left:
-            keys_down.append("AIL_LEFT")
-        if ail_right:
-            keys_down.append("AIL_RIGHT")
-        if rud_left:
-            keys_down.append("RUD_LEFT")
-        if rud_right:
-            keys_down.append("RUD_RIGHT")
-        ctrl_pos = (
-            f"LE={float(aircraft.get('l_elevator', 0.0)):.2f},RE={float(aircraft.get('r_elevator', 0.0)):.2f},"
-            f"LA={float(aircraft.get('l_aileron', 0.0)):.2f},RA={float(aircraft.get('r_aileron', 0.0)):.2f},"
-            f"LR={float(aircraft.get('l_rudder', 0.0)):.2f},RR={float(aircraft.get('r_rudder', 0.0)):.2f}"
-        )
-        detail = (
-            f"keys={keys_down if len(keys_down) > 0 else ['none']}; "
-            f"axis(p={axis_pitch:.3f},y={axis_yaw:.3f},r={axis_roll:.3f},dead={axis_dead:.3f}); "
-            f"axis_active(p={pitch_axis_active},y={yaw_axis_active},r={roll_axis_active}); "
-            f"ctrl_pos[{ctrl_pos}]"
-        )
-        throttle["VS_BIT_CTRL_MOVED"] = True
-        throttle["VS_BIT_ABORT_INPUT_SOURCE"] = "FLIGHT_CTRL"
-        throttle["VS_BIT_ABORT_INPUT_DETAIL"] = detail
-        _vs_bit_reset_runtime(throttle)
-        # Preserve captured abort detail after runtime reset for error logging.
-        throttle["VS_BIT_CTRL_MOVED"] = True
-        throttle["VS_BIT_ABORT_INPUT_SOURCE"] = "FLIGHT_CTRL"
-        throttle["VS_BIT_ABORT_INPUT_DETAIL"] = detail
-        _vs_bit_set_result(throttle, "FN", ["VS BIT: ABORT-HOTAS"])
-        vs_bit_running = False
-
-    # When VS BIT is running:
-    # - manual keys can still drive controls (and trigger failure),
-    # - no-key state must not auto-center, so BIT sequence remains authoritative.
-    skip_manual_update = bool(vs_bit_running and (not any_manual))
-
-    elev_target = 0.0
-    elev_active = False
-    if pitch_axis_active:
-        elev_target = max_defl * axis_pitch
-        elev_active = True
-    elif elev_up and (not elev_down):
-        elev_target = max_defl
-        elev_active = True
-    elif elev_down and (not elev_up):
-        elev_target = -max_defl
-        elev_active = True
-
-    # A: left up, right down. D: left down, right up.
-    ail_l_target = 0.0
-    ail_r_target = 0.0
-    ail_active = False
-    if roll_axis_active:
-        ail_l_target = -max_defl * axis_roll
-        ail_r_target = max_defl * axis_roll
-        ail_active = True
-    elif ail_left and (not ail_right):
-        ail_l_target = max_defl
-        ail_r_target = -max_defl
-        ail_active = True
-    elif ail_right and (not ail_left):
-        ail_l_target = -max_defl
-        ail_r_target = max_defl
-        ail_active = True
-
-    # Q: left rudder command. E: right rudder command.
-    rud_l_target = 0.0
-    rud_r_target = 0.0
-    rud_active = False
-    if yaw_axis_active:
-        rud_l_target = max_defl * axis_yaw
-        rud_r_target = max_defl * axis_yaw
-        rud_active = True
-    elif rud_left and (not rud_right):
-        rud_l_target = -max_defl
-        rud_r_target = -max_defl
-        rud_active = True
-    elif rud_right and (not rud_left):
-        rud_l_target = max_defl
-        rud_r_target = max_defl
-        rud_active = True
-
-    def _apply_target(key: str, target: float) -> None:
-        cur = float(aircraft.get(key, 0.0))
-        nxt = _step_toward(cur, target, rate_step)
-        aircraft[key] = _clamp_fcs(nxt, -max_defl, max_defl)
-
-    def _apply_instant(key: str, target: float) -> None:
-        aircraft[key] = _clamp_fcs(target, -max_defl, max_defl)
-
-    if skip_manual_update:
-        _sync_fcs_control_overlay_state(throttle, aircraft)
-        return
-
-    if rate_step <= 0.0:
-        # If time delta is unavailable, still honor pressed commands instantly.
-        if elev_active:
-            _apply_instant("l_elevator", elev_target)
-            _apply_instant("r_elevator", elev_target)
-        if ail_active:
-            _apply_instant("l_aileron", ail_l_target)
-            _apply_instant("r_aileron", ail_r_target)
-        if rud_active:
-            _apply_instant("l_rudder", rud_l_target)
-            _apply_instant("r_rudder", rud_r_target)
-        _sync_fcs_control_overlay_state(throttle, aircraft)
-        return
-
-    if ((not vs_bit_running) or elev_active) and (not block_elev):
-        _apply_target("l_elevator", elev_target)
-        _apply_target("r_elevator", elev_target)
-    if ((not vs_bit_running) or ail_active) and (not block_ail):
-        _apply_target("l_aileron", ail_l_target)
-        _apply_target("r_aileron", ail_r_target)
-    if ((not vs_bit_running) or rud_active) and (not block_rud):
-        _apply_target("l_rudder", rud_l_target)
-        _apply_target("r_rudder", rud_r_target)
-    _sync_fcs_control_overlay_state(throttle, aircraft)
-
-
-def _update_vs_bit_flight_controls(throttle: Dict[str, object], aircraft: Dict[str, object], dt_sec: float) -> None:
-    if (not bool(throttle.get("VS_BIT_RUNNING", False))) or (not bool(throttle.get("VS_BIT_FCS_ACTIVE", False))):
-        return
-    lef_lock = _active_icaw_has("LEF LOCK")
-    stick_jammed = _active_icaw_has("STICK JAMMED")
-    stab_fail = _active_icaw_has("STAB FAIL")
-    rudder_fail_dual = _active_icaw_has("RUDDER FAIL DUAL") or _active_icaw_has("RUDDER FAIL FUAL")
-    block_elev = bool(stick_jammed or stab_fail)
-    block_ail = bool(stick_jammed)
-    block_rud = bool(rudder_fail_dual)
-    now_ms = int(pygame.time.get_ticks())
-    next_step_due = int(throttle.get("VS_BIT_FCS_NEXT_STEP_MS", 0))
-    if next_step_due > now_ms:
-        return
-    step_idx = int(throttle.get("VS_BIT_FCS_STEP_IDX", 0))
-    if step_idx >= len(_VS_BIT_FCS_SEQUENCE):
-        throttle["VS_BIT_FCS_ACTIVE"] = False
-        throttle["VS_BIT_FCS_NEXT_STEP_MS"] = 0
-        return
-    rate_step = max(0.0, float(FLIGHT_CONTROL_MOVE_RATE_DPS) * float(VS_BIT_FLIGHT_CONTROL_RATE_SCALE) * max(0.0, float(dt_sec)))
-    step_data = _VS_BIT_FCS_SEQUENCE[step_idx]
-    action_done = bool(throttle.get("VS_BIT_FCS_ACTION_DONE", False))
-
-    refuel_cmd = step_data.get("refuel_open", None)
-    if isinstance(refuel_cmd, bool) and (not action_done):
-        _set_vs_bit_refuel_doors_open(bool(refuel_cmd))
-        throttle["VS_BIT_EXPECT_REFUEL_OPEN"] = bool(refuel_cmd)
-        action_done = True
-
-    complete = True
-    targets = step_data.get("targets", {})
-    if isinstance(targets, dict) and len(targets) > 0:
-        max_defl = float(FLIGHT_CONTROL_MAX_DEG)
-        for k, v in targets.items():
-            key = str(k)
-            if key not in {
-                "l_lef", "r_lef", "l_aileron", "r_aileron",
-                "l_rudder", "r_rudder", "l_elevator", "r_elevator",
-            }:
-                continue
-            if key in {"l_lef", "r_lef"} and lef_lock:
-                continue
-            if key in {"l_elevator", "r_elevator"} and block_elev:
-                continue
-            if key in {"l_aileron", "r_aileron"} and block_ail:
-                continue
-            if key in {"l_rudder", "r_rudder"} and block_rud:
-                continue
-            cur = float(aircraft.get(key, 0.0))
-            tgt = _clamp_fcs(float(v), -max_defl, max_defl)
-            nxt = _step_toward(cur, tgt, rate_step)
-            aircraft[key] = float(nxt)
-            if abs(nxt - tgt) > 1e-4:
-                complete = False
-    if isinstance(refuel_cmd, bool) and (not action_done):
-        complete = False
-
-    if complete:
-        step_delay_ms = int(VS_BIT_FCS_STEP_DELAY_MS)
-        try:
-            if "delay_s" in step_data:
-                step_delay_ms = int(round(max(0.0, float(step_data.get("delay_s", 0.0))) * 1000.0))
-            elif "delay_ms" in step_data:
-                step_delay_ms = int(round(max(0.0, float(step_data.get("delay_ms", 0.0)))))
-        except Exception:
-            step_delay_ms = int(VS_BIT_FCS_STEP_DELAY_MS)
-        step_idx += 1
-        throttle["VS_BIT_FCS_STEP_IDX"] = int(step_idx)
-        throttle["VS_BIT_FCS_ACTION_DONE"] = False
-        if step_idx >= len(_VS_BIT_FCS_SEQUENCE):
-            throttle["VS_BIT_FCS_ACTIVE"] = False
-            throttle["VS_BIT_FCS_NEXT_STEP_MS"] = 0
-        else:
-            throttle["VS_BIT_FCS_NEXT_STEP_MS"] = int(now_ms + max(0, step_delay_ms))
-    else:
-        throttle["VS_BIT_FCS_STEP_IDX"] = int(step_idx)
-        throttle["VS_BIT_FCS_ACTION_DONE"] = bool(action_done)
-
-
-def _update_panel_runtime(
-    now_ms: int,
-    dt_sec: float,
-    held_keys: Optional[set[int]] = None,
-    pmd_dr_state: Optional[Dict[str, object]] = None,
-) -> None:
-    state = _ensure_panel_button_states()
-    power = state.get("POWER PANEL", {})
-    throttle = state.get("THROTTLE", {})
-    console_left = state.get("CONSOLE LEFT", {})
-    aircraft = state.get("AIRCRAFT", {})
-    if not isinstance(power, dict) or not isinstance(throttle, dict) or not isinstance(console_left, dict):
-        return
-    if not isinstance(aircraft, dict):
-        aircraft = {}
-        state["AIRCRAFT"] = aircraft
-    for k in (
-        "l_lef", "r_lef", "l_aileron", "r_aileron",
-        "l_rudder", "r_rudder", "l_elevator", "r_elevator",
-    ):
-        aircraft.setdefault(k, 0.0)
-
-    active_icaws = _active_icaw_names()
-    fuel_available = bool(_fuel_feed_available())
-    fire_eng_active = "FIRE ENG" in active_icaws
-    flameout_active = "FLAMEOUT" in active_icaws
-    ipp_fail_active = "IPP FAIL" in active_icaws
-    lef_lock_active = "LEF LOCK" in active_icaws
-    if fire_eng_active or flameout_active:
-        throttle["ENGINE"] = "OFF"
-    if ipp_fail_active:
-        power["IPP"] = "OFF"
-        power["IPP_ON"] = False
-        power["IPP_ON_SINCE_MS"] = 0
-        power["IPP_START_HOLD_MS"] = 0
-        power["IPP_OFF_HOLD_MS"] = 0
-        power["IPP_START_SEQ_END_MS"] = 0
-        power["IPP_START_SEQ_SUCCESS"] = False
-        power["IPP_START_BLOCKED"] = False
-        power["IPP_SHUTDOWN_SEQ_END_MS"] = 0
-        power["BATT_270V_DIS_ON"] = False
-        power["BATT_270V_BIT_FLASH_UNTIL_MS"] = 0
-    if not fuel_available:
-        # No fuel feed available: IPP/engine cannot sustain operation.
-        throttle["ENGINE"] = "OFF"
-        power["IPP_ON"] = False
-        power["IPP_ON_SINCE_MS"] = 0
-        power["IPP_START_HOLD_MS"] = 0
-        power["IPP_OFF_HOLD_MS"] = 0
-        power["IPP_START_SEQ_END_MS"] = 0
-        power["IPP_START_SEQ_SUCCESS"] = False
-        power["IPP_START_BLOCKED"] = False
-        power["IPP_SHUTDOWN_SEQ_END_MS"] = 0
-        power["BATT_270V_DIS_ON"] = False
-        power["BATT_270V_BIT_FLASH_UNTIL_MS"] = 0
-
-    if lef_lock_active:
-        if "LEF_LOCK_L" not in throttle:
-            throttle["LEF_LOCK_L"] = float(aircraft.get("l_lef", 0.0))
-        if "LEF_LOCK_R" not in throttle:
-            throttle["LEF_LOCK_R"] = float(aircraft.get("r_lef", 0.0))
-        aircraft["l_lef"] = float(throttle.get("LEF_LOCK_L", aircraft.get("l_lef", 0.0)))
-        aircraft["r_lef"] = float(throttle.get("LEF_LOCK_R", aircraft.get("r_lef", 0.0)))
-    else:
-        throttle.pop("LEF_LOCK_L", None)
-        throttle.pop("LEF_LOCK_R", None)
-
-    gear_mode = str(console_left.get("GEAR", "DOWN_OFF")).upper()
-    gear_due = int(console_left.get("GEAR_TRANSITION_DUE_MS", 0))
-    gear_start = int(console_left.get("GEAR_TRANSITION_START_MS", 0))
-    gear_dir = str(console_left.get("GEAR_TRANSITION_DIR", "")).upper()
-    fire_gear_active = _active_icaw_has("FIRE GEAR")
-    gear_fail_active = _active_icaw_has("GEAR FAIL")
-    if gear_due > 0 and now_ms >= gear_due and (not fire_gear_active) and (not gear_fail_active):
-        if gear_mode == "UP_ON":
-            gear_mode = "UP_OFF"
-        elif gear_mode == "DOWN_ON":
-            gear_mode = "DOWN_OFF"
-        gear_due = 0
-        console_left["GEAR"] = gear_mode
-        console_left["GEAR_TRANSITION_DUE_MS"] = gear_due
-        console_left["GEAR_TRANSITION_START_MS"] = 0
-        console_left["GEAR_TRANSITION_DIR"] = ""
-        console_left["GEAR_TRANSITION_DURATION_MS"] = 0
-    if fire_gear_active or gear_fail_active:
-        if gear_mode.startswith("UP"):
-            console_left["GEAR"] = "UP_ON"
-        else:
-            console_left["GEAR"] = "DOWN_ON"
-        console_left["GEAR_TRANSITION_DUE_MS"] = 0
-        console_left["GEAR_TRANSITION_START_MS"] = 0
-        console_left["GEAR_TRANSITION_DIR"] = ""
-        console_left["GEAR_TRANSITION_DURATION_MS"] = 0
-    else:
-        try:
-            gear_transition_ms = int(console_left.get("GEAR_TRANSITION_DURATION_MS", 0))
-        except Exception:
-            gear_transition_ms = 0
-        if gear_transition_ms <= 0:
-            gear_transition_ms = CONSOLE_LEFT_GEAR_TRANSITION_DEFAULT_MS
-            if gear_due > now_ms:
-                gear_transition_ms = max(1, int(gear_due - now_ms))
-            console_left["GEAR_TRANSITION_DURATION_MS"] = int(gear_transition_ms)
-        if gear_due > 0 and gear_start <= 0:
-            console_left["GEAR_TRANSITION_START_MS"] = max(0, now_ms - int(gear_transition_ms))
-        if gear_due > 0 and gear_dir not in {"UP", "DOWN"}:
-            console_left["GEAR_TRANSITION_DIR"] = "UP" if gear_mode.startswith("UP") else "DOWN"
-        if gear_due <= 0:
-            console_left["GEAR_TRANSITION_START_MS"] = 0
-            console_left["GEAR_TRANSITION_DIR"] = ""
-            console_left["GEAR_TRANSITION_DURATION_MS"] = 0
-
-    dt_ms = int(max(0.0, dt_sec) * 1000.0)
-    batt_switch_on = str(power.get("BAT", "OFF")).upper() == "ON"
-    icc3_on = str(power.get("ICC3", "OFF")).upper() == "ON"
-    mf_sov_on = _is_mf_sov_on()
-    engine_mode_switch = str(throttle.get("ENGINE", "OFF")).upper()
-    prev_engine_mode_switch = str(throttle.get("ENGINE_SWITCH_PREV", "OFF")).upper()
-    if prev_engine_mode_switch not in {"OFF", "MOTOR", "RUN"}:
-        prev_engine_mode_switch = "OFF"
-    engine_switch_turned_off = bool(engine_mode_switch == "OFF" and prev_engine_mode_switch != "OFF")
-    engine_on_switch = (engine_mode_switch != "OFF") and (not mf_sov_on)
-    svc_vals = {}
-    hotas_axes: Dict[str, float] = {}
-    if isinstance(pmd_dr_state, dict):
-        maybe_vals = pmd_dr_state.get("svc_values", {})
-        if isinstance(maybe_vals, dict):
-            svc_vals = maybe_vals
-        maybe_hotas_axes = pmd_dr_state.get("hotas_axis", {})
-        if isinstance(maybe_hotas_axes, dict):
-            for action_name in ("pitch", "yaw", "roll"):
-                try:
-                    hotas_axes[action_name] = float(maybe_hotas_axes.get(action_name, 0.0))
-                except Exception:
-                    hotas_axes[action_name] = 0.0
-
-    try:
-        batt_28v = float(svc_vals.get("28V_BAT", power.get("BATT_28V", 95.0)))
-    except Exception:
-        batt_28v = 95.0
-    batt_28v = max(0.0, min(100.0, batt_28v))
-    batt_power_on = bool(batt_switch_on and batt_28v > 0.0)
-
-    bat_on_since_ms = int(power.get("BAT_ON_SINCE_MS", 0))
-    bat_off_since_ms = int(power.get("BAT_OFF_SINCE_MS", 0))
-    if batt_power_on:
-        if bat_on_since_ms <= 0:
-            if bool(power.get("BATT_28V_SBIT_COMPLETE", False)):
-                # Preserve hot-start completed SBIT even when early tick values
-                # make BAT_ON_SINCE_MS non-positive.
-                bat_on_since_ms = now_ms - BATT_28V_SBIT_COMPLETE_MS
-                bat_off_since_ms = 0
-            else:
-                bat_on_since_ms = now_ms
-                bat_off_since_ms = 0
-                power["BATT_28V_SBIT_STARTED"] = False
-                power["BATT_28V_SBIT_COMPLETE"] = False
-                power["BATT_28V_SBIT_FLASH_UNTIL_MS"] = 0
-                power["BATT_28V_DIS_ON"] = False
-                power["BATT_28V_DIS_CLEAR_DUE_MS"] = 0
-    else:
-        if bat_off_since_ms <= 0:
-            bat_off_since_ms = now_ms
-            bat_on_since_ms = 0
-            power["BATT_28V_SBIT_STARTED"] = False
-            power["BATT_28V_SBIT_COMPLETE"] = False
-            power["BATT_28V_SBIT_FLASH_UNTIL_MS"] = 0
-            power["BATT_28V_DIS_CLEAR_DUE_MS"] = 0
-
-    sbit_started = bool(power.get("BATT_28V_SBIT_STARTED", False))
-    sbit_complete = bool(power.get("BATT_28V_SBIT_COMPLETE", False))
-    sbit_flash_until = int(power.get("BATT_28V_SBIT_FLASH_UNTIL_MS", 0))
-    dis28_on = bool(power.get("BATT_28V_DIS_ON", False))
-    dis28_clear_due = int(power.get("BATT_28V_DIS_CLEAR_DUE_MS", 0))
-    if batt_power_on and bat_on_since_ms > 0:
-        elapsed = now_ms - bat_on_since_ms
-        if elapsed >= BATT_28V_SBIT_START_DELAY_MS and not sbit_started:
-            sbit_started = True
-            sbit_flash_until = now_ms + BATT_28V_SBIT_FLASH_MS
-        if elapsed >= BATT_28V_SBIT_COMPLETE_MS and not sbit_complete:
-            sbit_complete = True
-            dis28_on = True
-    else:
-        if bat_off_since_ms > 0 and (now_ms - bat_off_since_ms) >= BATT_28V_DIS_BATT_OFF_CLEAR_MS:
-            dis28_on = False
-
-    if dis28_clear_due > 0 and now_ms >= dis28_clear_due:
-        dis28_on = False
-        dis28_clear_due = 0
-
-    # 28V battery charge/discharge model driven by switch and powered sources.
-    if batt_power_on:
-        batt_rate = 0.1 if (bool(power.get("IPP_ON", False)) or engine_on_switch) else -0.1
-        batt_28v = max(0.0, min(100.0, batt_28v + batt_rate * max(0.0, dt_sec)))
-    if batt_28v <= 0.0:
-        batt_28v = 0.0
-        batt_power_on = False
-        dis28_on = False
-
-    # Push back into SVC debug state so field E6 always reflects runtime.
-    power["BATT_28V"] = float(batt_28v)
-    if isinstance(svc_vals, dict):
-        svc_vals["28V_BAT"] = float(batt_28v)
-
-    # IPP runtime model:
-    # - START requires completed 28V SBIT, BAT+ICC3 ON, and 3s hold.
-    # - Holding OFF for 5s starts a 60s flashing shutdown sequence.
-    ipp_mode = str(power.get("IPP", "AUTO")).upper()
-    ipp_mode_logic = str(ipp_mode)
-    ipp_on = bool(power.get("IPP_ON", False))
-    ipp_on_since_ms = int(power.get("IPP_ON_SINCE_MS", 0))
-    start_hold_ms = int(power.get("IPP_START_HOLD_MS", 0))
-    start_seq_end = int(power.get("IPP_START_SEQ_END_MS", 0))
-    start_seq_success = bool(power.get("IPP_START_SEQ_SUCCESS", False))
-    start_blocked = bool(power.get("IPP_START_BLOCKED", False))
-    shutdown_seq_end = int(power.get("IPP_SHUTDOWN_SEQ_END_MS", 0))
-    off_hold_ms = int(power.get("IPP_OFF_HOLD_MS", 0))
-    bit270_flash_until = int(power.get("BATT_270V_BIT_FLASH_UNTIL_MS", 0))
-    dis270_on = bool(power.get("BATT_270V_DIS_ON", False))
-    can_start_ipp = bool(batt_power_on and icc3_on and sbit_complete and fuel_available)
-    startup_active = bool(start_seq_success and start_seq_end > now_ms)
-    if ipp_mode_logic == "OFF" and startup_active and (not bool(power.get("EMER_PRESSED", False))):
-        # Keep switch visually in OFF while held, but ignore OFF logic during startup.
-        ipp_mode_logic = "AUTO"
-        off_hold_ms = 0
-
-    if start_seq_end > 0 and now_ms >= start_seq_end:
-        if start_seq_success and can_start_ipp:
-            ipp_on = True
-            ipp_on_since_ms = now_ms
-            dis28_clear_due = now_ms + BATT_28V_DIS_IPP_READY_CLEAR_MS
-        start_seq_end = 0
-        start_seq_success = False
-        start_blocked = False
-        dis270_on = False
-
-    if shutdown_seq_end > 0 and now_ms >= shutdown_seq_end:
-        ipp_on = False
-        ipp_on_since_ms = 0
-        shutdown_seq_end = 0
-
-    if bool(power.get("EMER_PRESSED", False)):
-        dis270_on = False
-
-    if not batt_power_on and not ipp_on:
-        start_seq_end = 0
-        start_seq_success = False
-        start_blocked = False
-        start_hold_ms = 0
-        bit270_flash_until = 0
-        dis270_on = False
-
-    if ipp_mode_logic != "START":
-        start_hold_ms = 0
-        start_blocked = False
-    elif sbit_complete:
-        prev_hold = start_hold_ms
-        start_hold_ms += dt_ms
-        if prev_hold <= 0:
-            bit270_flash_until = now_ms + BATT_270V_BIT_FLASH_MS
-        if (not ipp_on) and start_seq_end <= now_ms and shutdown_seq_end <= now_ms and start_hold_ms >= IPP_START_HOLD_REQUIRED_MS:
-            if can_start_ipp:
-                ipp_start_ms = get_sound_length_or_default_ms("IPP START", IPP_START_SUCCESS_FLASH_MS)
-                start_seq_end = now_ms + ipp_start_ms
-                start_seq_success = True
-                dis270_on = True
-                start_blocked = False
-            elif batt_power_on and (not icc3_on):
-                start_seq_end = now_ms + IPP_START_FAIL_FLASH_MS
-                start_seq_success = False
-                start_blocked = True
-            else:
-                start_blocked = True
-            start_hold_ms = 0
-
-    if ipp_mode_logic == "OFF":
-        off_hold_ms += dt_ms
-        if ipp_on and shutdown_seq_end <= now_ms and off_hold_ms >= IPP_OFF_HOLD_REQUIRED_MS:
-            shutdown_seq_end = now_ms + IPP_SHUTDOWN_FLASH_MS
-            off_hold_ms = 0
-            start_seq_end = 0
-            start_seq_success = False
-            start_blocked = False
-            start_hold_ms = 0
-            dis270_on = False
-    else:
-        off_hold_ms = 0
-
-    # Engine switch OFF always initiates IPP shutdown once (without resetting
-    # an already-running shutdown timer).
-    if engine_switch_turned_off and ipp_on and shutdown_seq_end <= now_ms:
-        shutdown_seq_end = now_ms + IPP_SHUTDOWN_FLASH_MS
-        off_hold_ms = 0
-        start_seq_end = 0
-        start_seq_success = False
-        start_blocked = False
-        start_hold_ms = 0
-        dis270_on = False
-
-    # Electrical light states.
-    if batt_28v <= 0.0:
-        low28 = False
-        dis28 = False
-        low270 = False
-        dis270 = False
-    else:
-        in_28v_flash = bool(batt_power_on and sbit_started and now_ms < sbit_flash_until)
-        low28 = bool(in_28v_flash or (batt_power_on and sbit_complete and batt_28v < 8.0 and ((now_ms // BATT_28V_LOW_FLASH_INTERVAL_MS) % 2 == 0)))
-        dis28 = bool(in_28v_flash or dis28_on)
-        in_270v_flash = now_ms < bit270_flash_until
-        low270 = bool(in_270v_flash)
-        dis270 = bool(in_270v_flash or dis270_on)
-
-    power["BAT_ACTIVE"] = bool(batt_power_on)
-    power["BAT_ON_SINCE_MS"] = int(bat_on_since_ms)
-    power["BAT_OFF_SINCE_MS"] = int(bat_off_since_ms)
-    power["BATT_28V_SBIT_STARTED"] = bool(sbit_started)
-    power["BATT_28V_SBIT_COMPLETE"] = bool(sbit_complete)
-    power["BATT_28V_SBIT_FLASH_UNTIL_MS"] = int(sbit_flash_until)
-    power["BATT_28V_DIS_ON"] = bool(dis28_on)
-    power["BATT_28V_DIS_CLEAR_DUE_MS"] = int(dis28_clear_due)
-    power["BATT_28V_LOW_LIGHT"] = bool(low28)
-    power["BATT_28V_DIS_LIGHT"] = bool(dis28)
-    power["BATT_270V_BIT_FLASH_UNTIL_MS"] = int(bit270_flash_until)
-    power["BATT_270V_DIS_ON"] = bool(dis270_on)
-    power["BATT_270V_LOW_LIGHT"] = bool(low270)
-    power["BATT_270V_DIS_LIGHT"] = bool(dis270)
-
-    power["IPP_ON"] = bool(ipp_on)
-    power["IPP"] = str(ipp_mode)
-    power["IPP_ON_SINCE_MS"] = int(ipp_on_since_ms)
-    power["IPP_START_HOLD_MS"] = int(start_hold_ms)
-    power["IPP_OFF_HOLD_MS"] = int(off_hold_ms)
-    power["IPP_START_SEQ_END_MS"] = int(start_seq_end)
-    power["IPP_START_SEQ_SUCCESS"] = bool(start_seq_success)
-    power["IPP_START_BLOCKED"] = bool(start_blocked)
-    power["IPP_SHUTDOWN_SEQ_END_MS"] = int(shutdown_seq_end)
-    throttle["ENGINE_SWITCH_PREV"] = str(engine_mode_switch)
-
-    # Canopy actuator: 10s full travel, stops/resumes from current position.
-    canopy_pos = float(throttle.get("CANOPY_POS", 0.0))
-    canopy_switch = str(throttle.get("CANOPY", "CENTER")).upper()
-    rate = (max(0.0, dt_sec) * 1000.0) / float(max(1, CANOPY_ACTUATOR_TRAVEL_MS))
-    if canopy_switch == "UP":
-        canopy_pos -= rate
-    elif canopy_switch == "DOWN":
-        canopy_pos += rate
-    throttle["CANOPY_POS"] = max(0.0, min(1.0, canopy_pos))
-
-    try:
-        curr_spool = float(throttle.get("ENGINE_SPOOL", 0.0))
-    except Exception:
-        curr_spool = 0.0
-    try:
-        curr_thr_pos = float(throttle.get("THROTTLE_POS", 0.0))
-    except Exception:
-        curr_thr_pos = 0.0
-    if (
-        str(engine_mode_switch).upper() == "RUN"
-        and str(throttle.get("ENGINE_SPOOL_MODE", "OFF")).upper() == "RUN"
-        and curr_spool >= 0.99
-        and curr_thr_pos <= 1.0
-    ):
-        if int(throttle.get("VS_BIT_IDLE_SINCE_MS", 0)) <= 0:
-            throttle["VS_BIT_IDLE_SINCE_MS"] = int(now_ms)
-    else:
-        throttle["VS_BIT_IDLE_SINCE_MS"] = 0
-
-    rudder_switch_mode = str(throttle.get("RUDDER", "CENTER")).upper()
-    try:
-        rudder_trim_in = float(throttle.get("RUDDER_TRIM_IN", 0.0))
-    except Exception:
-        rudder_trim_in = 0.0
-    trim_delta = float(max(0.0, dt_sec)) * float(RUDDER_TRIM_RATE_IN_PER_SEC)
-    if rudder_switch_mode == "LEFT":
-        rudder_trim_in -= trim_delta
-    elif rudder_switch_mode == "RIGHT":
-        rudder_trim_in += trim_delta
-    throttle["RUDDER_TRIM_IN"] = _clamp_fcs(rudder_trim_in, -FCS_SYMBOL_MAX_OFFSET_IN, FCS_SYMBOL_MAX_OFFSET_IN)
-
-    # Flight controls are static unless user input moves them, or VS BIT sequence drives them.
-    # Run VS BIT first; manual input can still override and will mark VS BIT failure.
-    _update_vs_bit_flight_controls(throttle, aircraft, dt_sec)
-    _update_user_flight_controls(throttle, aircraft, held_keys, dt_sec, hotas_axes=hotas_axes)
-
-    # Heading is now driven by coupled attitude dynamics in update_engine_runtime().
-
-    # VS BIT run timer and NO GO latch.
-    if bool(throttle.get("VS_BIT_RUNNING", False)):
-        if str(engine_mode_switch).upper() == "OFF":
-            _vs_bit_reset_runtime(throttle)
-            _vs_bit_set_result(throttle, "FN", ["VS BIT: ABORT-Engine Off"])
-            return
-        start_ms = int(throttle.get("VS_BIT_START_MS", 0))
-        end_ms = int(throttle.get("VS_BIT_END_MS", 0))
-        manual_override = bool(throttle.get("VS_BIT_MANUAL_OVERRIDE", False))
-        throttle_jammed = _active_icaw_has("THROTTLE JAMMED")
-        # During V/S BIT, throttle is auto-driven IDLE -> MAX in 1s, then
-        # MAX -> IDLE in 1s, then remains at IDLE for the rest of the BIT.
-        if (not throttle_jammed) and (not manual_override) and end_ms > start_ms and now_ms <= end_ms:
-            elapsed_ms = max(0, now_ms - start_ms)
-            if elapsed_ms < VS_BIT_THROTTLE_UP_MS:
-                auto_frac = elapsed_ms / float(max(1, VS_BIT_THROTTLE_UP_MS))
-            elif elapsed_ms < (VS_BIT_THROTTLE_UP_MS + VS_BIT_THROTTLE_DOWN_MS):
-                down_elapsed = elapsed_ms - VS_BIT_THROTTLE_UP_MS
-                auto_frac = 1.0 - (down_elapsed / float(max(1, VS_BIT_THROTTLE_DOWN_MS)))
-            else:
-                auto_frac = 0.0
-            auto_frac = max(0.0, min(1.0, auto_frac))
-            throttle["THROTTLE_POS"] = 150.0 * auto_frac
-        expected_refuel_open = throttle.get("VS_BIT_EXPECT_REFUEL_OPEN", None)
-        actual_refuel_open = bool(_is_refuel_door_open())
-        if isinstance(expected_refuel_open, bool):
-            # VS BIT-commanded refuel door open/close is allowed.
-            if actual_refuel_open != bool(expected_refuel_open):
-                throttle["VS_BIT_REFUEL_SEEN"] = True
-        else:
-            # Any refuel-door opening not commanded by VS BIT is a NO GO condition.
-            if actual_refuel_open:
-                throttle["VS_BIT_REFUEL_SEEN"] = True
-        prev_sig = str(throttle.get("VS_BIT_DOOR_SIG", ""))
-        now_sig = _weapon_door_signature(int(now_ms))
-        if _vs_bit_weapon_door_no_go(now_sig):
-            throttle["VS_BIT_DOOR_MOVED"] = True
-        elif prev_sig != "" and now_sig != prev_sig:
-            throttle["VS_BIT_DOOR_MOVED"] = True
-        throttle["VS_BIT_DOOR_SIG"] = now_sig
-        # Finalize only after timer expiry AND scripted flight-control sequence completion.
-        # Timeout FnA is intentionally disabled; VS BIT waits for sequence completion.
-        fcs_seq_done = not bool(throttle.get("VS_BIT_FCS_ACTIVE", False))
-        if end_ms > 0 and int(now_ms) >= end_ms and fcs_seq_done:
-            refuel_seen = bool(throttle.get("VS_BIT_REFUEL_SEEN", False))
-            door_moved = bool(throttle.get("VS_BIT_DOOR_MOVED", False))
-            throttle_moved = bool(throttle.get("VS_BIT_THROTTLE_MOVED", False))
-            ctrl_moved = bool(throttle.get("VS_BIT_CTRL_MOVED", False))
-            reasons: List[str] = []
-            if throttle_moved or ctrl_moved:
-                reasons.append("VS BIT: ABORT-HOTAS")
-            if refuel_seen or door_moved:
-                reasons.append("VS BIT: FAIL-FLCS")
-            reasons.extend(_vs_bit_collect_system_fail_reasons())
-            # Remove duplicates while preserving order.
-            uniq_reasons = list(dict.fromkeys([r for r in reasons if str(r).strip() != ""]))
-            _vs_bit_reset_runtime(throttle)
-            if len(uniq_reasons) > 0:
-                _vs_bit_set_result(throttle, "FN", uniq_reasons)
-            else:
-                _vs_bit_set_result(throttle, "OK", [])
-
-
-def _handle_panel_popup_mouse_down(pos: Tuple[int, int], mouse_button: int) -> bool:
-    if mouse_button not in {1, 2, 3}:
-        return False
-    for hit in reversed(_PANEL_RUNTIME_BUTTON_HITS):
-        rect = hit.get("rect")
-        if not isinstance(rect, pygame.Rect):
-            continue
-        if rect.collidepoint(pos):
-            panel = str(hit.get("panel", ""))
-            control = str(hit.get("control", ""))
-            if panel == "POWER PANEL":
-                if mouse_button in {1, 3}:
-                    _set_power_panel_control(control, mouse_button, True)
-                    return True
-                continue
-            if panel == "THROTTLE":
-                if mouse_button in {1, 3}:
-                    _set_throttle_panel_control(control, mouse_button, True)
-                    return True
-                continue
-            if panel == "DISPLAY CONTROL":
-                if mouse_button in {1, 3}:
-                    _set_display_control_panel_control(control, mouse_button, True)
-                    return True
-                continue
-            if panel == "MASTER ARM":
-                if mouse_button in {1, 3}:
-                    _set_master_arm_panel_control(control, mouse_button, True, pos=pos)
-                    return True
-                continue
-            if panel == "CONSOLE LEFT":
-                _set_console_left_panel_control(control, mouse_button, True)
-                return True
-    return False
-
-
-def _handle_panel_popup_mouse_up(mouse_button: int) -> None:
-    global _PANEL_ACTIVE_DIAL_DRAG
-    if isinstance(_PANEL_ACTIVE_DIAL_DRAG, dict):
-        try:
-            if int(_PANEL_ACTIVE_DIAL_DRAG.get("button", 1)) == int(mouse_button):
-                _PANEL_ACTIVE_DIAL_DRAG = None
-        except Exception:
-            _PANEL_ACTIVE_DIAL_DRAG = None
-    hold = _PANEL_ACTIVE_HOLDS.get(mouse_button)
-    if hold is None:
-        return
-    panel, control = hold
-    if panel == "POWER PANEL":
-        _set_power_panel_control(control, mouse_button, False)
-    elif panel == "THROTTLE":
-        _set_throttle_panel_control(control, mouse_button, False)
-    _PANEL_ACTIVE_HOLDS[mouse_button] = None
-
-
-def _release_panel_popup_holds() -> None:
-    global _PANEL_ACTIVE_DIAL_DRAG
-    _PANEL_ACTIVE_DIAL_DRAG = None
-    for b in (1, 3):
-        _handle_panel_popup_mouse_up(b)
-
-
-def _discover_panel_pages() -> List[List[str]]:
-    global _PANEL_PAGE_CACHE
-    if _PANEL_PAGE_CACHE is not None:
-        return _PANEL_PAGE_CACHE
-    root = resource_path("icons", "PANELS")
-    available: List[str] = []
-    try:
-        if root.exists():
-            for p in root.iterdir():
-                if not p.is_dir():
-                    continue
-                if (p / "DRAWING.png").exists() and (p / "TEXT.png").exists():
-                    available.append(p.name)
-    except Exception:
-        available = []
-    available_set = set(available)
-    pages: List[List[str]] = []
-    preferred_pages = [
-        ["POWER PANEL", "THROTTLE"],
-        ["DISPLAY CONTROL", "MASTER ARM", "CONSOLE LEFT", "CONSOLE RIGHT"],
-    ]
-    used: set = set()
-    for page in preferred_pages:
-        filtered = [name for name in page if name in available_set]
-        if filtered:
-            pages.append(filtered)
-            used.update(filtered)
-    remaining = [name for name in sorted(available) if name not in used]
-    for i in range(0, len(remaining), 2):
-        pages.append(remaining[i:i + 2])
-    if not pages:
-        pages = [[]]
-    _PANEL_PAGE_CACHE = pages
-    return pages
-
-
-def _panel_text_tint_rgb() -> Tuple[int, int, int]:
-    # LITES A1(CONSL) gates panel text tint; B1 controls white->green interpolation.
-    if not bool(_PANEL_TEXT_LITES_A1_ON):
-        return (255, 255, 255)
-    brt = max(0, min(100, int(_PANEL_TEXT_LITES_B1_BRT)))
-    t = float(brt) / 100.0
-    red_blue = int(round(255.0 * (1.0 - t)))
-    return (red_blue, 255, red_blue)
-
-
-def _refresh_panel_text_cache_sig() -> None:
-    global _PANEL_TEXT_CACHE_SIG
-    sig = (bool(_PANEL_TEXT_LITES_A1_ON), max(0, min(100, int(_PANEL_TEXT_LITES_B1_BRT))))
-    if _PANEL_TEXT_CACHE_SIG != sig:
-        _PANEL_IMAGE_CACHE.clear()
-        _PANEL_TEXT_CACHE_SIG = sig
-
-
-def _load_panel_composite(panel_name: str) -> Optional[pygame.Surface]:
-    _refresh_panel_text_cache_sig()
-    cached = _PANEL_IMAGE_CACHE.get(panel_name)
-    if cached is not None or panel_name in _PANEL_IMAGE_CACHE:
-        return cached
-    panel_dir = resource_path("icons", "PANELS", panel_name)
-    drawing_path = panel_dir / "DRAWING.png"
-    text_path = panel_dir / "TEXT.png"
-    if not drawing_path.exists() or not text_path.exists():
-        _PANEL_IMAGE_CACHE[panel_name] = None
-        return None
-    try:
-        drawing = pygame.image.load(str(drawing_path)).convert_alpha()
-        overlay = pygame.image.load(str(text_path)).convert_alpha()
-        tint_rgb = _panel_text_tint_rgb()
-        if tint_rgb != (255, 255, 255):
-            overlay = overlay.copy()
-            tint_layer = pygame.Surface(overlay.get_size(), pygame.SRCALPHA)
-            tint_layer.fill((int(tint_rgb[0]), int(tint_rgb[1]), int(tint_rgb[2]), 255))
-            overlay.blit(tint_layer, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-        w = max(drawing.get_width(), overlay.get_width())
-        h = max(drawing.get_height(), overlay.get_height())
-        composite = pygame.Surface((w, h), pygame.SRCALPHA)
-        composite.blit(drawing, drawing.get_rect(center=(w // 2, h // 2)))
-        composite.blit(overlay, overlay.get_rect(center=(w // 2, h // 2)))
-        if str(panel_name).strip().upper() == "THROTTLE":
-            composite = pygame.transform.rotate(composite, -90)
-        _PANEL_IMAGE_CACHE[panel_name] = composite
-        return composite
-    except Exception:
-        _PANEL_IMAGE_CACHE[panel_name] = None
-        return None
-
-
-def _load_panel_overlay_image(panel_name: str, filename: str) -> Optional[pygame.Surface]:
-    key = f"{panel_name}::__OVERLAY__::{filename}"
-    cached = _PANEL_IMAGE_CACHE.get(key)
-    if cached is not None or key in _PANEL_IMAGE_CACHE:
-        return cached
-    path = resource_path("icons", "PANELS", panel_name, filename)
-    if not path.exists():
-        _PANEL_IMAGE_CACHE[key] = None
-        return None
-    try:
-        surf = pygame.image.load(str(path)).convert_alpha()
-        _PANEL_IMAGE_CACHE[key] = surf
-        return surf
-    except Exception:
-        _PANEL_IMAGE_CACHE[key] = None
-        return None
 
 
 def draw_backtick_popup(screen: pygame.Surface, page_index: int = 0) -> Tuple[pygame.Rect, int]:
@@ -9438,10 +4889,10 @@ def draw_portal4_menu_popup(
             "DATA_LINK_KP_A6": ("A6", "TUV\n8"),
             "DATA_LINK_KP_B6": ("B6", "WXYZ\n9"),
             "DATA_LINK_KP_C6": ("C6", "1"),
-            "DATA_LINK_KP_A7": ("A7", "▲"),
+            "DATA_LINK_KP_A7": ("A7", "â–²"),
             "DATA_LINK_KP_B7": ("B7", "SPACE"),
             "DATA_LINK_KP_C7": ("C7", "BACK"),
-            "DATA_LINK_KP_A8": ("A8", "▼"),
+            "DATA_LINK_KP_A8": ("A8", "â–¼"),
         }
         selected_field = str(data_link_state.get("selected_field", "")).strip().lower()
         keypad_enabled = selected_field in {"flt_pos", "callsign", "msn_nbr", "net_key"}
@@ -9668,7 +5119,7 @@ def draw_portal4_menu_popup(
         input_text = str(ecs_state.get("d1_input", ""))
         if bool(ecs_state["d1_selected"]):
             padded = input_text[-2:].rjust(2, "_")
-            top_text = f"â†’{padded}"
+            top_text = f"Ã¢â€ â€™{padded}"
             draw_line(d1, 1, top_text, (255, 255, 255), d1_flashing, box_selected=True)
         d1_value_text = "0" if bool(ecs_state.get("cabin_press_active", False)) else str(int(ecs_state["d1_value"]))
         draw_line(d1, 2, "CABIN", LINE_COLOR, d1_flashing)
@@ -13907,8 +9358,18 @@ def render_format(
             format_obj._set_popup_anchor_scope_key(scope_key)
         except Exception:
             pass
+    active_render_portal_index = int(portal_index)
+    try:
+        if int(rect.width) >= int((10 * DPI) - 1):
+            anchor_idx_raw = getattr(format_obj, "_ui_popup_anchor_portal_index", None)
+            if anchor_idx_raw is not None:
+                anchor_idx = int(anchor_idx_raw)
+                if 0 <= anchor_idx <= 3:
+                    active_render_portal_index = int(anchor_idx)
+    except Exception:
+        active_render_portal_index = int(portal_index)
     context = FormatContext(
-        portal_index,
+        active_render_portal_index,
         request_vded,
         set_format,
         close_vded,
@@ -13955,7 +9416,7 @@ def render_format(
     )
     prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
     try:
-        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(portal_index))
+        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(active_render_portal_index))
     except Exception:
         pass
     try:
@@ -14337,8 +9798,18 @@ def draw_portal(
     # Optional post-subportal overlay pass for formats that need layering control.
     if portal_formats.primary is not None and hasattr(portal_formats.primary, "render_post_subportal_overlay"):
         try:
+            post_portal_index = int(portal_index)
+            try:
+                if int(primary_rect.width) >= int((10 * DPI) - 1):
+                    anchor_idx_raw = getattr(portal_formats.primary, "_ui_popup_anchor_portal_index", None)
+                    if anchor_idx_raw is not None:
+                        anchor_idx = int(anchor_idx_raw)
+                        if 0 <= anchor_idx <= 3:
+                            post_portal_index = int(anchor_idx)
+            except Exception:
+                post_portal_index = int(portal_index)
             post_context = FormatContext(
-                portal_index,
+                post_portal_index,
                 request_vded,
                 set_format,
                 close_vded,
@@ -14745,7 +10216,6 @@ def _migrate_legacy_runtime_writable_data() -> None:
         "PMD",
         "USERS",
         "stores.json",
-        "hrcs.txt",
         "DATA/FAA",
         "Recordings",
         "CACHE/3dworld",
@@ -14776,6 +10246,10 @@ def main() -> None:
         exe_path=exe_hint,
     )
     _DIST_SECRETS, _DIST_SECRETS_ERROR = load_dist_secrets(secrets_paths)
+    try:
+        dist_set_secrets(_DIST_SECRETS, _DIST_SECRETS_ERROR)
+    except Exception:
+        pass
     dist_runtime_metadata = _dist_default_metadata()
     dist_runtime_exe_path: Optional[Path] = None
     if is_frozen():
@@ -15278,172 +10752,38 @@ def main() -> None:
     if settings_dirty:
         save_settings(settings)
 
-    adsb_runtime_lock = threading.Lock()
-    adsb_runtime: Dict[str, object] = {
-        "enabled": bool(adsb_enabled),
-        "geo": None,
-        "lat": None,
-        "lon": None,
-        "manual_position": False,
-        "fetch_active": False,
-        "show_live_adsb": True,
-        "radius_km": int(adsb_radius_km),
-        "query_radius_km": int(adsb_radius_km),
-        "min_interval_s": int(adsb_min_interval_s),
-        "status": "idle",
-        "last_error": "",
-        "last_update_time": 0.0,
-        "aircraft_count": 0,
-        "raw": None,
-        "mil_raw": None,
-        "mil_aircraft_count": 0,
-    }
-    adsb_worker_stop_event = threading.Event()
+    adsb_manager = AdsbWorkerRuntime(
+        formats_module=formats,
+        enabled=bool(adsb_enabled),
+        radius_km=int(adsb_radius_km),
+        min_interval_s=int(adsb_min_interval_s),
+        adsb_default_radius_km=int(ADSB_DEFAULT_RADIUS_KM),
+        adsb_default_min_interval_s=int(ADSB_DEFAULT_MIN_INTERVAL_S),
+        adsb_mil_min_interval_s=int(ADSB_MIL_MIN_INTERVAL_S),
+        adsb_geo_refresh_s=int(ADSB_GEO_REFRESH_S),
+        current_ownship_adsb_center_cb=lambda: _current_ownship_adsb_center(),
+        safe_float_or_none_cb=_safe_float_or_none,
+        get_general_geo_area_from_ip_cb=lambda: get_general_geo_area_from_ip(),
+        get_adsb_data_cb=get_adsb_data,
+        get_adsb_mil_data_cb=get_adsb_mil_data,
+        adsb_aircraft_count_cb=_adsb_aircraft_count,
+        log_cb=print,
+    )
+    adsb_runtime_lock = adsb_manager.runtime_lock
+    adsb_runtime = adsb_manager.runtime
+    adsb_worker_stop_event = adsb_manager.stop_event
     adsb_worker_thread: Optional[threading.Thread] = None
 
     def _publish_adsb_runtime() -> None:
-        with adsb_runtime_lock:
-            snapshot = {
-                "enabled": bool(adsb_runtime.get("enabled", False)),
-                "geo": adsb_runtime.get("geo"),
-                "lat": adsb_runtime.get("lat"),
-                "lon": adsb_runtime.get("lon"),
-                "manual_position": bool(adsb_runtime.get("manual_position", False)),
-                "fetch_active": bool(adsb_runtime.get("fetch_active", False)),
-                "show_live_adsb": bool(adsb_runtime.get("show_live_adsb", True)),
-                "radius_km": int(adsb_runtime.get("radius_km", ADSB_DEFAULT_RADIUS_KM)),
-                "query_radius_km": int(adsb_runtime.get("query_radius_km", adsb_runtime.get("radius_km", ADSB_DEFAULT_RADIUS_KM))),
-                "min_interval_s": int(adsb_runtime.get("min_interval_s", ADSB_DEFAULT_MIN_INTERVAL_S)),
-                "status": str(adsb_runtime.get("status", "idle")),
-                "last_error": str(adsb_runtime.get("last_error", "")),
-                "last_update_time": float(adsb_runtime.get("last_update_time", 0.0)),
-                "aircraft_count": int(adsb_runtime.get("aircraft_count", 0)),
-                "raw": adsb_runtime.get("raw"),
-                "mil_raw": adsb_runtime.get("mil_raw"),
-                "mil_aircraft_count": int(adsb_runtime.get("mil_aircraft_count", 0)),
-            }
-        try:
-            setattr(formats, "TSD_ADSB_STATE", snapshot)
-        except Exception:
-            pass
+        adsb_manager.publish_runtime()
 
-    def _adsb_worker_loop() -> None:
-        geo_refresh_due_s = 0.0
-        while not adsb_worker_stop_event.is_set():
-            now_s = time.time()
-            with adsb_runtime_lock:
-                enabled = bool(adsb_runtime.get("enabled", False))
-                fetch_active = bool(adsb_runtime.get("fetch_active", False))
-                lat = adsb_runtime.get("lat")
-                lon = adsb_runtime.get("lon")
-                manual_position = bool(adsb_runtime.get("manual_position", False))
-                radius_km = int(adsb_runtime.get("query_radius_km", adsb_runtime.get("radius_km", ADSB_DEFAULT_RADIUS_KM)))
-                min_interval_s = int(adsb_runtime.get("min_interval_s", ADSB_DEFAULT_MIN_INTERVAL_S))
-            if not enabled:
-                with adsb_runtime_lock:
-                    adsb_runtime["status"] = "disabled"
-                _publish_adsb_runtime()
-                adsb_worker_stop_event.wait(1.0)
-                continue
-            if not fetch_active:
-                publish_hidden = False
-                with adsb_runtime_lock:
-                    if str(adsb_runtime.get("status", "")) != "idle_hidden" or str(adsb_runtime.get("last_error", "")) != "":
-                        publish_hidden = True
-                    adsb_runtime["status"] = "idle_hidden"
-                    adsb_runtime["last_error"] = ""
-                if publish_hidden:
-                    _publish_adsb_runtime()
-                adsb_worker_stop_event.wait(1.0)
-                continue
-
-            ownship_center = _current_ownship_adsb_center()
-            if isinstance(ownship_center, tuple) and len(ownship_center) == 2:
-                own_lat = _safe_float_or_none(ownship_center[0])
-                own_lon = _safe_float_or_none(ownship_center[1])
-                if own_lat is not None and own_lon is not None:
-                    with adsb_runtime_lock:
-                        adsb_runtime["lat"] = float(own_lat)
-                        adsb_runtime["lon"] = float(own_lon)
-                        geo_raw = adsb_runtime.get("geo")
-                        if isinstance(geo_raw, dict):
-                            geo = dict(geo_raw)
-                        else:
-                            geo = {}
-                        geo["lat"] = float(own_lat)
-                        geo["lon"] = float(own_lon)
-                        geo["source"] = "ownship"
-                        adsb_runtime["geo"] = geo
-                        adsb_runtime["status"] = "geo_ok"
-                        adsb_runtime["last_error"] = ""
-                    _publish_adsb_runtime()
-            elif (not manual_position) and (lat is None or lon is None or now_s >= geo_refresh_due_s):
-                geo = get_general_geo_area_from_ip()
-                geo_refresh_due_s = now_s + float(ADSB_GEO_REFRESH_S)
-                if isinstance(geo, dict):
-                    with adsb_runtime_lock:
-                        adsb_runtime["geo"] = geo
-                        adsb_runtime["lat"] = geo.get("lat")
-                        adsb_runtime["lon"] = geo.get("lon")
-                        adsb_runtime["status"] = "geo_ok"
-                        adsb_runtime["last_error"] = ""
-                    area = ", ".join([str(geo.get("city", "")).strip(), str(geo.get("region", "")).strip(), str(geo.get("country", "")).strip()]).strip(", ")
-                    print(f"ADSB GEO: {area if area != '' else 'resolved'} @ {geo.get('lat')}, {geo.get('lon')} ({geo.get('source', 'ip')})")
-                else:
-                    with adsb_runtime_lock:
-                        adsb_runtime["status"] = "geo_unavailable"
-                        adsb_runtime["last_error"] = "IP geolocation failed"
-                _publish_adsb_runtime()
-
-            with adsb_runtime_lock:
-                lat_f = _safe_float_or_none(adsb_runtime.get("lat"))
-                lon_f = _safe_float_or_none(adsb_runtime.get("lon"))
-                radius_km = int(adsb_runtime.get("query_radius_km", adsb_runtime.get("radius_km", ADSB_DEFAULT_RADIUS_KM)))
-                min_interval_s = int(adsb_runtime.get("min_interval_s", ADSB_DEFAULT_MIN_INTERVAL_S))
-            if lat_f is not None and lon_f is not None:
-                try:
-                    prev_fetch_ts = float(getattr(get_adsb_data, "_last_request_time", 0.0))
-                except Exception:
-                    prev_fetch_ts = 0.0
-                data = get_adsb_data(lat_f, lon_f, radius=max(1, radius_km), min_interval=max(10, min_interval_s))
-                try:
-                    fetch_ts = float(getattr(get_adsb_data, "_last_request_time", 0.0))
-                except Exception:
-                    fetch_ts = 0.0
-                fetched_fresh = fetch_ts > (prev_fetch_ts + 1e-6)
-                count = _adsb_aircraft_count(data)
-                with adsb_runtime_lock:
-                    adsb_runtime["raw"] = data
-                    adsb_runtime["aircraft_count"] = int(count)
-                    # Keep this timestamp as "last true network refresh" so TSD
-                    # dead-reckoning can project between API updates.
-                    if fetched_fresh and fetch_ts > 0.0:
-                        adsb_runtime["last_update_time"] = float(fetch_ts)
-                    elif float(adsb_runtime.get("last_update_time", 0.0)) <= 0.0 and data is not None:
-                        adsb_runtime["last_update_time"] = float(time.time())
-                    if data is not None:
-                        adsb_runtime["status"] = "ok"
-                        adsb_runtime["last_error"] = ""
-                    elif str(adsb_runtime.get("status", "")) == "":
-                        adsb_runtime["status"] = "no_data"
-                _publish_adsb_runtime()
-
-            mil_data = get_adsb_mil_data(min_interval=ADSB_MIL_MIN_INTERVAL_S)
-            mil_count = _adsb_aircraft_count(mil_data)
-            with adsb_runtime_lock:
-                adsb_runtime["mil_raw"] = mil_data
-                adsb_runtime["mil_aircraft_count"] = int(mil_count)
-            _publish_adsb_runtime()
-
-            adsb_worker_stop_event.wait(1.0)
+    def _start_adsb_worker_once() -> None:
+        nonlocal adsb_worker_thread
+        if adsb_worker_thread is not None:
+            return
+        adsb_worker_thread = adsb_manager.start_if_enabled()
 
     _publish_adsb_runtime()
-    if adsb_enabled:
-        try:
-            adsb_worker_thread = threading.Thread(target=_adsb_worker_loop, daemon=True, name="adsb_worker")
-            adsb_worker_thread.start()
-        except Exception as exc:
-            print(f"ADSB worker failed to start: {exc}")
     formats_path: Optional[Path] = None
     last_formats_mtime: Optional[float] = None
     if not is_frozen():
@@ -15485,6 +10825,7 @@ def main() -> None:
     vded_flash_until: Dict[Tuple[int, str], int] = {}
     pending_vded_action: Optional[Tuple[int, str, Optional[str], int]] = None
     osb_flash_until: Dict[Tuple[int, str], int] = {}
+    osb_vded_target_override: Optional[int] = None
     status_menu_popup_active = False
     status_menu_button_flash_until = 0
     status_menu_button_rect: Optional[pygame.Rect] = None
@@ -15868,40 +11209,14 @@ def main() -> None:
         result: object,
         now_ms: int,
     ) -> Tuple[bool, Optional[Tuple[str, Optional[str], int]]]:
-        # Returns (handled, optional_status_menu_pending_action)
-        if isinstance(result, bool):
-            return bool(result), None
-        if result is None:
-            return True, None
-        if isinstance(result, str):
-            token = str(result).strip().lower()
-            if token == "":
-                return True, None
-            if token == "back":
-                return True, ("back", None, int(now_ms) + OSB_FLASH_MS)
-            if token == "close":
-                return True, ("open", None, int(now_ms) + OSB_FLASH_MS)
-            return True, ("open", str(result), int(now_ms) + OSB_FLASH_MS)
-        if isinstance(result, dict):
-            if result.get("handled", True) is False:
-                return False, None
-            action = str(result.get("action", "")).strip().lower()
-            if action in {"", "none"}:
-                submenu = result.get("submenu", result.get("value", None))
-                if submenu is None:
-                    return True, None
-                return True, ("open", str(submenu), int(now_ms) + OSB_FLASH_MS)
-            if action == "back":
-                return True, ("back", None, int(now_ms) + OSB_FLASH_MS)
-            if action == "close":
-                return True, ("open", None, int(now_ms) + OSB_FLASH_MS)
-            if action == "open":
-                submenu = result.get("submenu", result.get("value", None))
-                return True, ("open", None if submenu is None else str(submenu), int(now_ms) + OSB_FLASH_MS)
-            return True, None
-        return True, None
+        return _pmd_status_menu_action_from_plugin_result_impl(
+            result,
+            now_ms=int(now_ms),
+            osb_flash_ms=int(OSB_FLASH_MS),
+        )
 
     pending_nav_menu_action: Optional[Tuple[int, int]] = None
+    pending_osb_actions: List[Tuple[int, str, Optional[str], int]] = []
     cockpit_panels_popup_active = False
     cockpit_panels_page_index = 0
     cockpit_panels_total_pages = 1
@@ -16182,6 +11497,18 @@ def main() -> None:
         "nav_degd_active": False,
         "ins_fail_active": False,
     }
+    # Keep formats-side sensor renderers (TFLIR/DAS) aligned with the live
+    # ownship solution from main loop without requiring ADS-B state.
+    try:
+        setattr(formats, "ins_gps_state", ins_gps_state)
+    except Exception:
+        pass
+    # Share the same cockpit state object with formats so 3D renderers receive
+    # live altitude/attitude instead of falling back to zero/defaults.
+    try:
+        setattr(formats, "PANEL_BUTTON_STATES", _ensure_panel_button_states())
+    except Exception:
+        pass
     hotas_settings_raw = settings.get(HOTAS_BINDINGS_SETTINGS_KEY, {})
     hotas_settings = hotas_settings_raw if isinstance(hotas_settings_raw, dict) else {}
     hotas_saved_bindings_raw = hotas_settings.get("bindings", {})
@@ -16386,12 +11713,11 @@ def main() -> None:
     pmd_status_menu_button_handlers: Dict[str, Callable[[Dict[str, object]], object]] = {}
 
     def _pmd_status_menu_zone_key(plugin_id: str, button_id: str) -> str:
-        raw_plugin = _sanitize_pmd_id(plugin_id)
-        raw_button = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in str(button_id).strip().upper())
-        raw_button = raw_button.strip("_")
-        if raw_button == "":
-            raw_button = "BTN"
-        return f"PMD_EXT_{raw_plugin}_{raw_button}"
+        return _pmd_status_menu_zone_key_impl(
+            plugin_id,
+            button_id,
+            sanitize_pmd_id=_sanitize_pmd_id,
+        )
 
     def _pmd_remove_runtime_status_menu_buttons(runtime: Optional[PmdPluginRuntime]) -> None:
         if runtime is None:
@@ -16855,36 +12181,12 @@ def main() -> None:
             return None
 
     def _pmd_manifest_for_dir(plugin_dir: Path) -> Dict[str, object]:
-        manifest_path = plugin_dir / PMD_MANIFEST_FILE
-        defaults: Dict[str, object] = {
-            "name": plugin_dir.name,
-            "description": "",
-            "creator": "UNKNOWN",
-            "url": "",
-            "entry": PMD_DEFAULT_ENTRY_FILE,
-            "code": PMD_DEFAULT_ENTRY_FILE,
-            "autoload": False,
-            "session_only": False,
-        }
-        manifest = _safe_read_json(manifest_path, defaults)
-        entry_raw = str(manifest.get("entry", manifest.get("code", PMD_DEFAULT_ENTRY_FILE))).strip()
-        if entry_raw == "":
-            entry_raw = PMD_DEFAULT_ENTRY_FILE
-        manifest["entry"] = entry_raw
-        manifest["code"] = entry_raw
-        name = str(manifest.get("name", plugin_dir.name)).strip()
-        if name == "":
-            name = plugin_dir.name
-        manifest["name"] = name
-        manifest["description"] = str(manifest.get("description", "")).strip()
-        creator = str(manifest.get("creator", manifest.get("author", "UNKNOWN"))).strip()
-        manifest["creator"] = creator if creator != "" else "UNKNOWN"
-        manifest["url"] = str(
-            manifest.get("url", manifest.get("author_url", manifest.get("website", "")))
-        ).strip()
-        manifest["autoload"] = bool(manifest.get("autoload", manifest.get("persistent", False)))
-        manifest["session_only"] = bool(manifest.get("session_only", False))
-        return manifest
+        return _pmd_manifest_for_dir_impl(
+            plugin_dir,
+            manifest_file=PMD_MANIFEST_FILE,
+            default_entry_file=PMD_DEFAULT_ENTRY_FILE,
+            safe_read_json=_safe_read_json,
+        )
 
     def _sync_pmd_ui_cache(status_text: Optional[str] = None) -> None:
         items: List[Dict[str, object]] = []
@@ -16984,8 +12286,6 @@ def main() -> None:
         data_root.mkdir(parents=True, exist_ok=True)
         stores_src_path = resource_path("stores.json")
         stores_dst_path = writable_path("stores.json")
-        hrcs_src_path = resource_path("hrcs.txt")
-        hrcs_dst_path = writable_path("hrcs.txt")
 
         def _safe_plugin_path(relative_path: object, base: Path) -> Path:
             rel = str(relative_path).strip()
@@ -17100,19 +12400,18 @@ def main() -> None:
             return ok
 
         def _read_hrcs_text() -> str:
-            src = hrcs_dst_path if hrcs_dst_path.exists() else hrcs_src_path
             try:
-                return src.read_text(encoding="utf-8")
+                getter = getattr(formats, "get_hrcs_text", None)
+                if callable(getter):
+                    return str(getter())
+                return ""
             except Exception:
                 return ""
 
         def _write_hrcs_text(text: object) -> bool:
-            try:
-                hrcs_dst_path.parent.mkdir(parents=True, exist_ok=True)
-                hrcs_dst_path.write_text(str(text), encoding="utf-8")
-                return True
-            except Exception:
-                return False
+            _ = text
+            # HRC catalog is code-defined and immutable at runtime.
+            return False
 
         return {
             "plugin_id": runtime.plugin_id,
@@ -17144,9 +12443,11 @@ def main() -> None:
             "load_video": _load_video,
             "draw_video": _draw_video,
             "stores_json_path": stores_dst_path if stores_dst_path.exists() else stores_src_path,
-            "hrcs_txt_path": hrcs_dst_path if hrcs_dst_path.exists() else hrcs_src_path,
+            "hrcs_source": "code",
             "load_stores_json": _load_stores_json,
             "save_stores_json": _save_stores_json,
+            "read_hrcs_json_text": _read_hrcs_text,
+            "write_hrcs_json_text": _write_hrcs_text,
             "read_hrcs_txt": _read_hrcs_text,
             "write_hrcs_txt": _write_hrcs_text,
             "pygame": pygame,
@@ -17154,47 +12455,20 @@ def main() -> None:
         }
 
     def _pmd_deactivate_plugin(plugin_id: str, remove_files: bool = False) -> bool:
-        key = _sanitize_pmd_id(plugin_id)
-        if key == "":
-            return False
-        runtime = pmd_plugins.pop(key, None)
-        was_loaded = runtime is not None
-        if runtime is None:
-            runtime = pmd_disabled_plugins.pop(key, None)
-            if runtime is None:
-                return False
-        if was_loaded:
-            api_obj = runtime.scope.get("PMD_API")
-            if not isinstance(api_obj, dict):
-                api_obj = _pmd_build_api(runtime)
-            try:
-                if callable(runtime.on_unload):
-                    runtime.on_unload(api_obj)
-            except Exception:
-                traceback.print_exc()
-            _pmd_remove_runtime_status_menu_buttons(runtime)
-            try:
-                reg = getattr(formats, "_FORMAT_REGISTRY", {})
-                if isinstance(reg, dict):
-                    for fmt_name in runtime.added_formats:
-                        reg.pop(str(fmt_name), None)
-                    for fmt_name, factory in runtime.format_overrides.items():
-                        reg[str(fmt_name)] = factory
-                for fmt_name in runtime.added_formats:
-                    while str(fmt_name) in formats.FORMAT_NAMES:
-                        formats.FORMAT_NAMES.remove(str(fmt_name))
-            except Exception:
-                pass
-        else:
-            _pmd_remove_runtime_status_menu_buttons(runtime)
-        if remove_files:
-            try:
-                shutil.rmtree(runtime.folder, ignore_errors=True)
-            except Exception:
-                pass
-        _pmd_update_settings_lists()
-        _sync_pmd_ui_cache()
-        return True
+        return _pmd_deactivate_plugin_impl(
+            plugin_id,
+            sanitize_pmd_id=_sanitize_pmd_id,
+            pmd_plugins=pmd_plugins,
+            pmd_disabled_plugins=pmd_disabled_plugins,
+            pmd_build_api=_pmd_build_api,
+            pmd_remove_runtime_status_menu_buttons=_pmd_remove_runtime_status_menu_buttons,
+            pmd_update_settings_lists=_pmd_update_settings_lists,
+            sync_pmd_ui_cache=_sync_pmd_ui_cache,
+            formats_module=formats,
+            traceback_module=traceback,
+            shutil_module=shutil,
+            remove_files=bool(remove_files),
+        )
 
     def _pmd_activate_plugin(
         plugin_dir: Path,
@@ -17351,38 +12625,27 @@ def main() -> None:
         return True, f"Loaded PMD: {runtime.display_name}"
 
     def _pmd_disable_plugin(plugin_id: str) -> Tuple[bool, str]:
-        key = _sanitize_pmd_id(plugin_id)
-        if key == "":
-            return False, "Invalid PMD ID."
-        runtime = pmd_plugins.get(key)
-        if runtime is None:
-            return False, "PMD is not active."
-        runtime.enabled = False
-        pmd_disabled_plugins[key] = runtime
-        if not _pmd_deactivate_plugin(key, remove_files=False):
-            pmd_disabled_plugins.pop(key, None)
-            return False, "Unable to disable PMD."
-        _sync_pmd_ui_cache()
-        return True, f"Disabled PMD: {runtime.display_name}"
+        return _pmd_disable_plugin_impl(
+            plugin_id,
+            sanitize_pmd_id=_sanitize_pmd_id,
+            pmd_plugins=pmd_plugins,
+            pmd_disabled_plugins=pmd_disabled_plugins,
+            pmd_deactivate_plugin_cb=lambda pid, remove: _pmd_deactivate_plugin(pid, remove_files=bool(remove)),
+            sync_pmd_ui_cache=_sync_pmd_ui_cache,
+        )
 
     def _pmd_enable_plugin(plugin_id: str) -> Tuple[bool, str]:
-        key = _sanitize_pmd_id(plugin_id)
-        if key == "":
-            return False, "Invalid PMD ID."
-        runtime = pmd_disabled_plugins.get(key)
-        if runtime is None:
-            return False, "PMD is already enabled."
-        ok, msg = _pmd_activate_plugin(
-            runtime.folder,
-            source_archive=runtime.archive_path,
-            session_only_override=bool(runtime.session_only),
+        return _pmd_enable_plugin_impl(
+            plugin_id,
+            sanitize_pmd_id=_sanitize_pmd_id,
+            pmd_disabled_plugins=pmd_disabled_plugins,
+            pmd_activate_plugin_cb=lambda folder, source_archive, session_only_override: _pmd_activate_plugin(
+                folder,
+                source_archive=source_archive,
+                session_only_override=session_only_override,
+            ),
+            sync_pmd_ui_cache=_sync_pmd_ui_cache,
         )
-        if ok:
-            pmd_disabled_plugins.pop(key, None)
-            _sync_pmd_ui_cache()
-        else:
-            pmd_disabled_plugins[key] = runtime
-        return ok, msg
 
     def _pmd_import_archive(archive_path: Path, session_only: Optional[bool] = None) -> Tuple[bool, str]:
         ext = archive_path.suffix.lower()
@@ -18617,22 +13880,193 @@ def main() -> None:
             traceback.print_exc()
             running = False
 
-    def request_vded(portal_index: int, vded_name: str) -> None:
+    def request_vded(portal_index: int, vded_name: str, source_format_name: Optional[str] = None) -> None:
         try:
             portal_index = int(portal_index)
         except Exception:
             return
+        try:
+            if osb_vded_target_override is not None:
+                portal_index = int(osb_vded_target_override)
+        except Exception:
+            pass
         if not (0 <= portal_index < len(vded_states)):
             return
         vded_states[portal_index].active = True
         vded_states[portal_index].name = vded_name
+        vded_states[portal_index].source_format_name = str(source_format_name).strip() if source_format_name is not None else None
         vded_states[portal_index].instance = create_vded(vded_name)
         instance = vded_states[portal_index].instance
         if instance is not None and hasattr(instance, "set_current_format"):
             try:
-                instance.set_current_format(portal_formats[portal_index].primary.name)
+                fmt_name = vded_states[portal_index].source_format_name
+                if not fmt_name:
+                    fmt_name = str(getattr(portal_formats[portal_index].primary, "name", "BLANK"))
+                instance.set_current_format(fmt_name)
             except Exception as exc:
                 print(f"VDED init error: {exc}")
+
+    def _resolve_osb_popup_anchor_portal(
+        portal_index: int,
+        label: str,
+        popup_name: Optional[str],
+    ) -> int:
+        try:
+            idx = int(portal_index)
+        except Exception:
+            return int(portal_index)
+        # Status popups remain anchored to their popup portal.
+        if popup_name is not None:
+            return idx
+        pair_idx = idx // 2
+        if pair_idx < 0 or pair_idx >= len(pair_owner):
+            return idx
+        try:
+            owner_idx = pair_owner[pair_idx]
+        except Exception:
+            owner_idx = None
+        if owner_idx is None:
+            return idx
+        side = str(label or "").upper().strip()[:1]
+        pair_start = pair_idx * 2
+        left_idx = pair_start
+        right_idx = pair_start + 1
+        if side == "R":
+            return int(right_idx)
+        if side == "T":
+            try:
+                osb_num = int(str(label or "").upper().strip()[1:])
+            except Exception:
+                osb_num = 1
+            return int(right_idx if osb_num >= 6 else left_idx)
+        if side == "B":
+            try:
+                osb_num = int(str(label or "").upper().strip()[1:])
+            except Exception:
+                osb_num = 1
+            return int(right_idx if osb_num >= 6 else left_idx)
+        if side == "L":
+            return int(left_idx)
+        return idx
+
+    def _queue_osb_action(
+        portal_index: int,
+        label: str,
+        popup_name: Optional[str],
+        due_ms: int,
+    ) -> None:
+        nonlocal pending_osb_actions
+        key_portal = int(portal_index)
+        key_label = str(label).upper().strip()
+        key_popup = None if popup_name is None else str(popup_name)
+        # Replace pending duplicate action for same portal/OSB.
+        pending_osb_actions = [
+            item
+            for item in pending_osb_actions
+            if not (int(item[0]) == key_portal and str(item[1]).upper().strip() == key_label)
+        ]
+        pending_osb_actions.append((key_portal, key_label, key_popup, int(due_ms)))
+
+    def _execute_osb_action(
+        portal_index: int,
+        label: str,
+        popup_name: Optional[str],
+    ) -> bool:
+        nonlocal osb_vded_target_override
+        try:
+            label_txt = str(label).upper().strip()
+            anchor_portal_idx = _resolve_osb_popup_anchor_portal(portal_index, label_txt, popup_name)
+            action_portal_idx = int(portal_index)
+            if popup_name is None:
+                try:
+                    pair_idx = int(portal_index) // 2
+                    owner_idx = pair_owner[pair_idx]
+                    if owner_idx is not None:
+                        action_portal_idx = int(owner_idx)
+                except Exception:
+                    action_portal_idx = int(portal_index)
+            if popup_name is not None:
+                portal_format = create_format(str(popup_name))
+                if hasattr(portal_format, "_set_popup_anchor_scope_key"):
+                    try:
+                        portal_format._set_popup_anchor_scope_key(f"status_popup:{int(portal_index)}")
+                    except Exception:
+                        pass
+            else:
+                portal_format = portal_formats[int(action_portal_idx)].primary
+                try:
+                    setattr(portal_format, "_ui_popup_anchor_portal_index", int(anchor_portal_idx))
+                except Exception:
+                    pass
+                if hasattr(portal_format, "_set_popup_anchor_scope_key"):
+                    try:
+                        portal_format._set_popup_anchor_scope_key(f"portal:{int(anchor_portal_idx)}")
+                    except Exception:
+                        pass
+            if hasattr(portal_format, "_set_popup_anchor_portal_index"):
+                try:
+                    portal_format._set_popup_anchor_portal_index(int(anchor_portal_idx))
+                except Exception:
+                    pass
+
+            # In expanded 10x5/10x7 formats, the clicked OSB side is the UI
+            # anchor even though the format instance may be owned by the other
+            # portal in the pair.
+            context_portal_idx = int(anchor_portal_idx)
+            if label_txt == "T1":
+                t1_goes_menu = True
+                if hasattr(portal_format, "t1_opens_menu"):
+                    try:
+                        t1_goes_menu = bool(portal_format.t1_opens_menu())
+                    except Exception:
+                        t1_goes_menu = True
+                if t1_goes_menu:
+                    request_vded(
+                        int(anchor_portal_idx),
+                        "MENU",
+                        source_format_name=str(getattr(portal_format, "name", "")),
+                    )
+                    return True
+
+            def _request_vded_for_osb(req_portal_idx: int, vded_name: str) -> None:
+                try:
+                    req_idx = int(req_portal_idx)
+                except Exception:
+                    req_idx = int(context_portal_idx)
+                if req_idx == int(context_portal_idx):
+                    request_vded(
+                        int(anchor_portal_idx),
+                        vded_name,
+                        source_format_name=str(getattr(portal_format, "name", "")),
+                    )
+                else:
+                    request_vded(req_idx, vded_name)
+
+            context = FormatContext(
+                context_portal_idx, _request_vded_for_osb, set_format, close_vded
+            )
+            if hasattr(portal_format, "on_osb"):
+                _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
+                try:
+                    osb_vded_target_override = int(anchor_portal_idx)
+                    setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(anchor_portal_idx))
+                    handled_local = bool(portal_format.on_osb(label_txt, context))
+                finally:
+                    osb_vded_target_override = None
+                    try:
+                        if _prev_active_portal is None:
+                            if hasattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX"):
+                                delattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX")
+                        else:
+                            setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", _prev_active_portal)
+                    except Exception:
+                        pass
+                if handled_local:
+                    return True
+            print(f"Portal P{int(portal_index) + 1} OSB {label_txt}")
+            return False
+        except Exception:
+            return False
 
     def _normalize_tsd_name(name: str) -> Optional[str]:
         upper = str(name).upper()
@@ -19227,6 +14661,8 @@ def main() -> None:
             return None
         return float(lat), float(lon)
 
+    _start_adsb_worker_once()
+
     def _update_adsb_query_radius_from_tsd() -> None:
         dynamic_km = _current_tsd_corner_query_radius_km()
         center = _current_ownship_adsb_center()
@@ -19257,7 +14693,9 @@ def main() -> None:
             if _normalize_tsd_name(text) is not None:
                 return True
             # TWD now consumes ADS-B backed tracks directly.
-            return text == "TWD"
+            if text in {"TWD", "ASR1"}:
+                return True
+            return False
 
         if phase < 1 or bool(debug_overlay_active):
             return False
@@ -19286,6 +14724,14 @@ def main() -> None:
         debug_overlay_active: bool,
     ) -> None:
         should_fetch = _adsb_requests_should_run(active_status_popups, debug_overlay_active)
+        # Keep ADS-B ingestion running in the background when enabled so all
+        # consumers (TSD/ASR/TWD) have live data even if they are opened later.
+        try:
+            enabled_now = bool(adsb_runtime.get("enabled", False))
+        except Exception:
+            enabled_now = False
+        if enabled_now and phase >= 1:
+            should_fetch = True
         publish = False
         with adsb_runtime_lock:
             prev_fetch = bool(adsb_runtime.get("fetch_active", False))
@@ -19365,6 +14811,7 @@ def main() -> None:
         vded_states[portal_index].active = False
         vded_states[portal_index].name = None
         vded_states[portal_index].instance = None
+        vded_states[portal_index].source_format_name = None
 
     def close_vded_for_portal(portal_index: int) -> None:
         nonlocal pending_nav_menu_action, pending_vded_action
@@ -28305,44 +23752,10 @@ def main() -> None:
         return None
 
     def _udp_relay_image_bytes_from_entry(raw: object) -> Tuple[bytes, str, str]:
-        if not isinstance(raw, dict):
-            return (b"", "image/png", "")
-        mime = str(raw.get("mime", "")).strip() or "image/png"
-        name = str(raw.get("name", "")).strip()
-        b64 = str(raw.get("data_b64", raw.get("data", raw.get("b64", "")))).strip()
-        if b64 == "":
-            return (b"", mime, name)
-        if "," in b64 and b64.lower().startswith("data:"):
-            b64 = b64.split(",", 1)[1].strip()
-        try:
-            return (base64.b64decode(b64, validate=False), mime, name)
-        except Exception:
-            return (b"", mime, name)
+        return _udp_relay_image_bytes_from_entry_impl(raw)
 
     def _udp_relay_referenced_image_tokens(net_payload: object) -> List[str]:
-        out: List[str] = []
-        if not isinstance(net_payload, dict):
-            return out
-        missions = net_payload.get("missions", {})
-        if not isinstance(missions, dict):
-            return out
-        store = missions.get("store", {})
-        if not isinstance(store, dict):
-            return out
-        seen: set = set()
-        for _mid, mraw in store.items():
-            if not isinstance(mraw, dict):
-                continue
-            imgs = mraw.get("images", [])
-            if not isinstance(imgs, list):
-                continue
-            for raw_token in imgs:
-                token = str(raw_token).strip()
-                if token == "" or token in seen:
-                    continue
-                seen.add(token)
-                out.append(token)
-        return out
+        return _udp_relay_referenced_image_tokens_impl(net_payload)
 
     def _udp_relay_refresh_image_tx_tokens(net_payload: object, now_ms: int) -> None:
         nonlocal udp_relay_img_tx_refresh_ms
@@ -28689,57 +24102,10 @@ def main() -> None:
             udp_relay_img_rx_state.pop(key, None)
 
     def _udp_relay_pack_datalink_payload_blob(payload: object) -> Tuple[Dict[str, object], bool]:
-        """
-        Encode datalink payload into a compact transport envelope.
-        Returns (fields_to_merge_into_datalink, used_compression).
-        """
-        if not isinstance(payload, dict) or len(payload) <= 0:
-            return ({"payload": {}}, False)
-        try:
-            raw_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-        except Exception:
-            return ({"payload": payload}, False)
-        # Keep simple/raw for small payloads to avoid unnecessary CPU work.
-        if len(raw_json) <= 1800:
-            return ({"payload": payload}, False)
-        try:
-            comp = zlib.compress(raw_json, level=6)
-            b64 = base64.b64encode(comp).decode("ascii")
-            if len(b64) < max(1, int(len(raw_json) * 0.85)):
-                return (
-                    {
-                        "payload": {},
-                        "payload_codec": "zlib+base64+json",
-                        "payload_z": b64,
-                        "payload_raw_bytes": int(len(raw_json)),
-                    },
-                    True,
-                )
-        except Exception:
-            pass
-        return ({"payload": payload}, False)
+        return _udp_relay_pack_datalink_payload_blob_impl(payload)
 
     def _udp_relay_unpack_datalink_payload_blob(dl_obj: object) -> Dict[str, object]:
-        if not isinstance(dl_obj, dict):
-            return {}
-        payload_raw = dl_obj.get("payload", {})
-        if isinstance(payload_raw, dict) and len(payload_raw) > 0:
-            return payload_raw
-        codec = str(dl_obj.get("payload_codec", "")).strip().lower()
-        if codec != "zlib+base64+json":
-            return {}
-        payload_z = str(dl_obj.get("payload_z", "")).strip()
-        if payload_z == "":
-            return {}
-        try:
-            comp = base64.b64decode(payload_z, validate=False)
-            raw = zlib.decompress(comp)
-            parsed = json.loads(raw.decode("utf-8", errors="ignore"))
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-        return {}
+        return _udp_relay_unpack_datalink_payload_blob_impl(dl_obj)
 
     def _udp_relay_send_packet(packet: Dict[str, object]) -> bool:
         if not udp_relay_enabled or udp_relay_sock is None:
@@ -31441,6 +26807,12 @@ def main() -> None:
             adjust_engine_thrust(throttle_delta, source="keyboard")
         update_engine_runtime(dt_sec)
         try:
+            # Keep formats module state references live for TFLIR/DAS pose extraction.
+            setattr(formats, "ins_gps_state", ins_gps_state)
+            setattr(formats, "PANEL_BUTTON_STATES", _ensure_panel_button_states())
+        except Exception:
+            pass
+        try:
             _push_pose_to_3dworld(
                 now,
                 ins_gps_state if isinstance(ins_gps_state, dict) else {},
@@ -31915,6 +27287,17 @@ def main() -> None:
             if not record_active:
                 start_recording_session(_screen_debug_initial_record_rect(), source="screen_debug")
             screen_dbg_pending_record_start = False
+        if len(pending_osb_actions) > 0:
+            still_pending: List[Tuple[int, str, Optional[str], int]] = []
+            for portal_idx, label, popup_name, due_ms in pending_osb_actions:
+                try:
+                    if int(now) >= int(due_ms):
+                        _execute_osb_action(int(portal_idx), str(label), popup_name)
+                    else:
+                        still_pending.append((int(portal_idx), str(label), popup_name, int(due_ms)))
+                except Exception:
+                    continue
+            pending_osb_actions = still_pending
         if pending_nav_menu_action is not None:
             pending_nav = pending_nav_menu_action if isinstance(pending_nav_menu_action, (tuple, list)) else None
             if pending_nav is not None and len(pending_nav) >= 2:
@@ -35726,9 +31109,23 @@ def main() -> None:
                                 break
 
                     if not handled:
+                        popup_capture_portal_idx: Optional[int] = None
+                        for _pidx, _pname in active_status_popups_by_portal.items():
+                            try:
+                                _pidx_i = int(_pidx)
+                            except Exception:
+                                continue
+                            if get_portal_rect(_pidx_i).collidepoint(event.pos):
+                                popup_capture_portal_idx = _pidx_i
+                                break
                         for zone in osb_zones:
+                            # If a status popup is active under the cursor, block
+                            # underlying/overlapped portal OSBs from consuming input.
+                            if popup_capture_portal_idx is not None and int(zone.portal_index) != int(popup_capture_portal_idx):
+                                continue
                             if zone.rect.collidepoint(event.pos):
                                 popup_name = active_status_popups_by_portal.get(zone.portal_index)
+                                anchor_portal_idx = _resolve_osb_popup_anchor_portal(zone.portal_index, zone.label, popup_name)
                                 if popup_name is not None:
                                     portal_format = create_format(str(popup_name))
                                     if hasattr(portal_format, "_set_popup_anchor_scope_key"):
@@ -35738,20 +31135,24 @@ def main() -> None:
                                             pass
                                 else:
                                     portal_format = portal_formats[zone.portal_index].primary
+                                    try:
+                                        setattr(portal_format, "_ui_popup_anchor_portal_index", int(anchor_portal_idx))
+                                    except Exception:
+                                        pass
                                     if hasattr(portal_format, "_set_popup_anchor_scope_key"):
                                         try:
-                                            portal_format._set_popup_anchor_scope_key(f"portal:{int(zone.portal_index)}")
+                                            portal_format._set_popup_anchor_scope_key(f"portal:{int(anchor_portal_idx)}")
                                         except Exception:
                                             pass
                                 if hasattr(portal_format, "_set_popup_anchor_portal_index"):
                                     try:
-                                        portal_format._set_popup_anchor_portal_index(zone.portal_index)
+                                        portal_format._set_popup_anchor_portal_index(int(anchor_portal_idx))
                                     except Exception:
                                         pass
                                 if hasattr(portal_format, "osb_is_interactive"):
                                     try:
                                         _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
-                                        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(zone.portal_index))
+                                        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(anchor_portal_idx))
                                         if not bool(portal_format.osb_is_interactive(zone.label)):
                                             handled = True
                                             break
@@ -35774,61 +31175,21 @@ def main() -> None:
                                 )
                                 activate_button(osb_click, now, OSB_FLASH_MS)
                                 osb_flash_until[(zone.portal_index, zone.label)] = osb_click.flash_until_ms
-                                popup_name = active_status_popups_by_portal.get(zone.portal_index)
-                                if popup_name is not None:
-                                    portal_format = create_format(str(popup_name))
-                                    if hasattr(portal_format, "_set_popup_anchor_scope_key"):
-                                        try:
-                                            portal_format._set_popup_anchor_scope_key(f"status_popup:{int(zone.portal_index)}")
-                                        except Exception:
-                                            pass
+                                due_ms = button_action_due_ms(osb_click, now)
+                                if button_executes_after_flash(osb_click):
+                                    _queue_osb_action(
+                                        int(zone.portal_index),
+                                        str(zone.label),
+                                        popup_name,
+                                        int(due_ms),
+                                    )
                                 else:
-                                    portal_format = portal_formats[zone.portal_index].primary
-                                    if hasattr(portal_format, "_set_popup_anchor_scope_key"):
-                                        try:
-                                            portal_format._set_popup_anchor_scope_key(f"portal:{int(zone.portal_index)}")
-                                        except Exception:
-                                            pass
-                                if hasattr(portal_format, "_set_popup_anchor_portal_index"):
-                                    try:
-                                        portal_format._set_popup_anchor_portal_index(zone.portal_index)
-                                    except Exception:
-                                        pass
-                                context_portal_idx = zone.portal_index
-                                if zone.label == "T1":
-                                    t1_goes_menu = True
-                                    if hasattr(portal_format, "t1_opens_menu"):
-                                        try:
-                                            t1_goes_menu = bool(portal_format.t1_opens_menu())
-                                        except Exception:
-                                            t1_goes_menu = True
-                                    if t1_goes_menu:
-                                        # Keep VDED target tied to the clicked portal index so
-                                        # expanded right-side owners (P2/P4) remain P2/P4.
-                                        context_portal_idx = zone.portal_index
-                                        pending_nav_menu_action = (context_portal_idx, now + OSB_FLASH_MS)
-                                        handled = True
-                                        break
-                                context = FormatContext(
-                                    context_portal_idx, request_vded, set_format, close_vded
-                                )
-                                if hasattr(portal_format, "on_osb"):
-                                    try:
-                                        _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
-                                        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(zone.portal_index))
-                                        if portal_format.on_osb(zone.label, context):
-                                            handled = True
-                                            break
-                                    finally:
-                                        try:
-                                            if _prev_active_portal is None:
-                                                if hasattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX"):
-                                                    delattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX")
-                                            else:
-                                                setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", _prev_active_portal)
-                                        except Exception:
-                                            pass
-                                print(f"Portal P{zone.portal_index + 1} OSB {zone.label}")
+                                    _execute_osb_action(
+                                        int(zone.portal_index),
+                                        str(zone.label),
+                                        popup_name,
+                                    )
+                                handled = True
                                 break
                     if not handled:
                         # Active status popups must consume clicks in their portal so
@@ -35910,13 +31271,6 @@ def main() -> None:
                                 )
                             if not click_rect.collidepoint(event.pos):
                                 continue
-                            click_context = FormatContext(
-                                portal_idx,
-                                request_vded,
-                                set_format,
-                                close_vded,
-                                is_osb_flashing=lambda label, idx=portal_idx: osb_flash_until.get((idx, label), 0) > now,
-                            )
                             try:
                                 fmt_name_upper = str(getattr(fmt, "name", "")).upper().replace("-", "")
                             except Exception:
@@ -35924,9 +31278,38 @@ def main() -> None:
                             if fmt_name_upper == "TSD1":
                                 _set_hotas_slew_cursor_logical(int(event.pos[0]), int(event.pos[1]), make_visible=False)
                             try:
-                                if bool(fmt.on_click(event.pos, click_rect, click_context)):
-                                    handled = True
-                                    break
+                                active_click_portal = int(portal_idx)
+                                if int(click_rect.width) >= int((10 * DPI) - 1):
+                                    try:
+                                        anchor_raw = getattr(fmt, "_ui_popup_anchor_portal_index", None)
+                                        if anchor_raw is not None:
+                                            anchor_idx = int(anchor_raw)
+                                            if 0 <= anchor_idx <= 3:
+                                                active_click_portal = int(anchor_idx)
+                                    except Exception:
+                                        active_click_portal = int(portal_idx)
+                                click_context = FormatContext(
+                                    active_click_portal,
+                                    request_vded,
+                                    set_format,
+                                    close_vded,
+                                    is_osb_flashing=lambda label, idx=active_click_portal: osb_flash_until.get((idx, label), 0) > now,
+                                )
+                                _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
+                                try:
+                                    setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(active_click_portal))
+                                    if bool(fmt.on_click(event.pos, click_rect, click_context)):
+                                        handled = True
+                                        break
+                                finally:
+                                    try:
+                                        if _prev_active_portal is None:
+                                            if hasattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX"):
+                                                delattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX")
+                                        else:
+                                            setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", _prev_active_portal)
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
 
