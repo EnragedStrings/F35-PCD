@@ -17,8 +17,6 @@ This project includes modular display formats, cockpit panel simulation, TSD/ASR
 
 ## Screenshots
 
-Add screenshots under `docs/screenshots/` and replace the placeholder paths below.
-
 ### Full PCD Layout
 
 ![Full PCD layout](docs/screenshots/full-pcd-layout.png)
@@ -43,10 +41,9 @@ Add screenshots under `docs/screenshots/` and replace the placeholder paths belo
 ![FCS page](docs/screenshots/fcs-format.png)
 ![Engine page](docs/screenshots/eng-format.png)
 
-### Cockpit Panels / Debug Pages
+### Cockpit Panels
 
 ![Cockpit panels](docs/screenshots/cockpit-panels.png)
-![Debug menu](docs/screenshots/debug-menu.png)
 
 ## Requirements
 
