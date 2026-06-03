@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
 import importlib.util
 import os
 import time
@@ -13,21 +15,48 @@ _SRC_PATH = _ROOT / "3DWorld.py"
 _BACKING = None
 
 
+def _load_3dworld_module():
+    if _SRC_PATH.exists():
+        spec = importlib.util.spec_from_file_location("_f35_dasworld_backing", str(_SRC_PATH))
+        if spec is None or spec.loader is None:
+            msg = "Unable to load 3DWorld backing module for DASWorld"
+            try:
+                print(f"[DASWORLD] {msg}")
+            except Exception:
+                pass
+            raise RuntimeError(msg)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    # PyInstaller onefile builds usually bundle imported modules into the PYZ
+    # archive instead of extracting a loose 3DWorld.py beside DASWorld.py.
+    # Fall back to the bundled module so compiled DAS can still run.
+    bundled_spec = importlib.util.find_spec("3DWorld")
+    bundled_loader = getattr(bundled_spec, "loader", None)
+    get_code = getattr(bundled_loader, "get_code", None)
+    if callable(get_code):
+        code = get_code("3DWorld")
+        if code is not None:
+            mod = importlib.util.module_from_spec(
+                importlib.machinery.ModuleSpec("_f35_dasworld_backing", bundled_loader)
+            )
+            mod.__dict__["__file__"] = str(_SRC_PATH)
+            mod.__dict__["__package__"] = ""
+            exec(code, mod.__dict__)
+            return mod
+
+    # Last-resort fallback. This may share module globals with TFLIR, but it is
+    # still better than failing to render DAS in unusual packager layouts.
+    return importlib.import_module("3DWorld")
+
+
 def _load_backing():
     global _BACKING
     if _BACKING is not None:
         return _BACKING
-    spec = importlib.util.spec_from_file_location("_f35_dasworld_backing", str(_SRC_PATH))
-    if spec is None or spec.loader is None:
-        msg = "Unable to load 3DWorld backing module for DASWorld"
-        try:
-            print(f"[DASWORLD] {msg}")
-        except Exception:
-            pass
-        raise RuntimeError(msg)
-    mod = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(mod)
+        mod = _load_3dworld_module()
     except Exception as exc:
         try:
             print(f"[DASWORLD] backing exec failed: {exc}")

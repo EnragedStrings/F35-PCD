@@ -2784,6 +2784,7 @@ class VdedState:
     name: Optional[str] = None
     instance: Optional[object] = None
     source_format_name: Optional[str] = None
+    target_portal_index: Optional[int] = None
 
 @dataclass
 class VdedZone:
@@ -10823,7 +10824,7 @@ def main() -> None:
     poi_on_screen = True
     vded_states = [VdedState() for _ in range(4)]
     vded_flash_until: Dict[Tuple[int, str], int] = {}
-    pending_vded_action: Optional[Tuple[int, str, Optional[str], int]] = None
+    pending_vded_action: Optional[Tuple[int, str, Optional[str], int, int]] = None
     osb_flash_until: Dict[Tuple[int, str], int] = {}
     osb_vded_target_override: Optional[int] = None
     status_menu_popup_active = False
@@ -13880,7 +13881,12 @@ def main() -> None:
             traceback.print_exc()
             running = False
 
-    def request_vded(portal_index: int, vded_name: str, source_format_name: Optional[str] = None) -> None:
+    def request_vded(
+        portal_index: int,
+        vded_name: str,
+        source_format_name: Optional[str] = None,
+        target_portal_index: Optional[int] = None,
+    ) -> None:
         try:
             portal_index = int(portal_index)
         except Exception:
@@ -13892,9 +13898,16 @@ def main() -> None:
             pass
         if not (0 <= portal_index < len(vded_states)):
             return
+        try:
+            target_idx = int(target_portal_index) if target_portal_index is not None else int(portal_index)
+        except Exception:
+            target_idx = int(portal_index)
+        if not (0 <= target_idx < len(vded_states)):
+            target_idx = int(portal_index)
         vded_states[portal_index].active = True
         vded_states[portal_index].name = vded_name
         vded_states[portal_index].source_format_name = str(source_format_name).strip() if source_format_name is not None else None
+        vded_states[portal_index].target_portal_index = int(target_idx)
         vded_states[portal_index].instance = create_vded(vded_name)
         instance = vded_states[portal_index].instance
         if instance is not None and hasattr(instance, "set_current_format"):
@@ -14025,6 +14038,7 @@ def main() -> None:
                         int(anchor_portal_idx),
                         "MENU",
                         source_format_name=str(getattr(portal_format, "name", "")),
+                        target_portal_index=int(action_portal_idx),
                     )
                     return True
 
@@ -14038,6 +14052,7 @@ def main() -> None:
                         int(anchor_portal_idx),
                         vded_name,
                         source_format_name=str(getattr(portal_format, "name", "")),
+                        target_portal_index=int(action_portal_idx),
                     )
                 else:
                     request_vded(req_idx, vded_name)
@@ -14812,6 +14827,7 @@ def main() -> None:
         vded_states[portal_index].name = None
         vded_states[portal_index].instance = None
         vded_states[portal_index].source_format_name = None
+        vded_states[portal_index].target_portal_index = None
 
     def close_vded_for_portal(portal_index: int) -> None:
         nonlocal pending_nav_menu_action, pending_vded_action
@@ -27319,12 +27335,13 @@ def main() -> None:
                     action = pending_vded[1]
                     value = pending_vded[2]
                     due_ms = int(pending_vded[3])
+                    target_portal_idx = int(pending_vded[4]) if len(pending_vded) >= 5 else int(portal_idx)
                 except Exception:
                     pending_vded_action = None
                 else:
                     if now >= due_ms:
                         if action == "set_format" and value is not None:
-                            set_format(portal_idx, value)
+                            set_format(target_portal_idx, value)
                         close_vded(portal_idx)
                         pending_vded_action = None
         vded_flash_until = {
@@ -31022,6 +31039,12 @@ def main() -> None:
                                     elif new_format is not None:
                                         action = ("set_format", new_format)
                                     if isinstance(action, (tuple, list)) and len(action) >= 2:
+                                        try:
+                                            target_portal_idx = int(vded_state.target_portal_index)
+                                        except Exception:
+                                            target_portal_idx = int(zone.portal_index)
+                                        if not (0 <= int(target_portal_idx) < len(vded_states)):
+                                            target_portal_idx = int(zone.portal_index)
                                         click = ButtonState(
                                             button_id=f"VDED_P{zone.portal_index + 1}_{zone.label}",
                                             button_type=ButtonType.MOMENTARY_SINGLE,
@@ -31035,6 +31058,7 @@ def main() -> None:
                                             action[0],
                                             action[1],
                                             now + OSB_FLASH_MS,
+                                            int(target_portal_idx),
                                         )
                                         vded_hit = True
                                         handled = True
