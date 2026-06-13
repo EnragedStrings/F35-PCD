@@ -125,11 +125,11 @@ class FcsFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
@@ -476,8 +476,8 @@ class FcsFormat(FormatBase):
                 button_type=ButtonType.MOMENTARY_SINGLE,
                 text=text,
                 flash_until_ms=1 if context.is_osb_flashing(osb_label) else 0,
-                is_single_function=True,
-                is_on=bool(FCS_STATE.get(state_key, False)),
+                is_single_function=False if osb_label in {"R4", "R5"} else True,
+                is_on=False if osb_label in {"R4", "R5"} else bool(FCS_STATE.get(state_key, False)),
                 h_align=h_align,
                 v_align=v_align,
                 font_size=14,
@@ -506,6 +506,14 @@ class FcsFormat(FormatBase):
         if spec is None:
             return False
         state_key, _ = spec
+        if label in {"R4", "R5"}:
+            FCS_STATE[state_key] = False
+            if label == "R5":
+                FCS_STATE["top_cyan_x_in"] = 0.0
+                FCS_STATE["top_cyan_y_in"] = 0.0
+                FCS_STATE["bottom_cyan_x_in"] = 0.0
+                FCS_STATE["rudder_trim_in"] = 0.0
+            return True
         FCS_STATE[state_key] = not bool(FCS_STATE.get(state_key, False))
         if label == "L3" and bool(FCS_STATE.get(state_key, False)):
             # FCS A/P quick-enable: HDG SEL + ALT HOLD + SPEED HOLD.

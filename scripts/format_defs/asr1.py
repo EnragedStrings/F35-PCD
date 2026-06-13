@@ -1257,16 +1257,16 @@ class Asr1Format(FormatBase):
             return pygame.Rect(rect.x + (idx - 1) * GRID_CELL_W, rect.y, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "L":
             if idx == 7:
-                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx == 7:
-                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     @staticmethod
@@ -1274,7 +1274,7 @@ class Asr1Format(FormatBase):
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     def _draw_header_value_button(
         self,
@@ -1362,7 +1362,7 @@ class Asr1Format(FormatBase):
 
     def _res_popup_rows(self, rect: pygame.Rect) -> Tuple[int, int]:
         is_5x7 = rect.height >= int(7 * DPI) - 1
-        row_start = 3 if is_5x7 else 2
+        row_start = 3
         row_end = row_start + 3
         return row_start, row_end
 
@@ -1728,7 +1728,9 @@ class Asr1Format(FormatBase):
             max_project_s = max(2.0, min(45.0, float(configured_interval_s) * 2.5))
             project_dt_s = min(age_s, max_project_s)
             for contact in contacts:
-                if str(contact.get("domain", "")).upper().strip() != "GROUND":
+                # ASR NONE/WX shows airborne ADS-B returns as blue squares.
+                # Ground movers are represented separately by the yellow GMTI simulation below.
+                if str(contact.get("domain", "AIR")).upper().strip() == "GROUND":
                     continue
                 lat = Tsd1Format._safe_float(contact.get("lat"))
                 lon = Tsd1Format._safe_float(contact.get("lon"))

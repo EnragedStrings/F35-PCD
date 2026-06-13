@@ -1,3 +1,5 @@
+import random
+
 from formats import *  # noqa: F401,F403
 
 
@@ -12,6 +14,68 @@ class PhmFormat(FormatBase):
         self._status_next_rect: Optional[pygame.Rect] = None
         self._status_selected_sub_idx: int = 0
         self._status_system_name: Optional[str] = None
+        self._network_selected_idx: int = 0
+        self._links_selected_idx: int = 0
+        self._links_network_name: str = "SWITCH A FC"
+
+    _NETWORK_OPTIONS: List[str] = ["SWITCH A FC", "SWITCH B FC", "PT-2-PT FC", "1394 NET"]
+
+    @classmethod
+    def _network_options(cls) -> List[str]:
+        return list(cls._NETWORK_OPTIONS)
+
+    def _selected_network_name(self) -> str:
+        opts = self._network_options()
+        if len(opts) <= 0:
+            return "SWITCH A FC"
+        self._network_selected_idx = max(0, min(int(self._network_selected_idx), len(opts) - 1))
+        return str(opts[int(self._network_selected_idx)])
+
+    @staticmethod
+    def _switch_link_rows(switch_name: str) -> List[Tuple[str, str, str, str, str, str]]:
+        suffix = "2" if "B" in str(switch_name).upper() else "1"
+        rows = [
+            ("DMCL(1)", "18J5", "UP", "0", "0", "normal"),
+            ("INS(1)", "19J4", "UP", "0", "", "normal"),
+            ("GPS(1)", "20J3", "UP", "0", "", "normal"),
+            ("RADAR(A3B)", "21", "UP", "0", "0", "normal"),
+            ("RADAR(A2B)", "22", "UP", "0", "0", "normal"),
+            ("SPARE(A3)", "23", "NC", "NC", "", "white"),
+            ("GPIOA1A1", "24", "UP", "0", "0", "normal"),
+            ("GPA1A1", "25", "UP", "0", "0", "normal"),
+            ("CNI-B(1)", "26J3", "UP", "0", "", "normal"),
+            ("ISL(6)", "27J2", "UP", "0", "0", "normal"),
+            ("ISL(5)", "28J3", "UP", "0", "0", "normal"),
+            ("GPIOA1A2", "29", "UP", "0", "0", "normal"),
+            ("GPA1B1", "30", "DN", "2", "??", "red_ers"),
+            ("GPA1B2", "31", "DN", "2", "??", "red_ers"),
+            ("GPA1A2", "32", "UP", "1", "1", "normal"),
+        ]
+        if suffix == "2":
+            rows = [(port.replace("(1)", "(2)"), num, st, ers, ern, style) for port, num, st, ers, ern, style in rows]
+        return rows
+
+    @staticmethod
+    def _pt2pt_link_rows() -> List[Tuple[str, str, str, str, str]]:
+        return [
+            ("GPIOA1A1-2", "FR-L", "UP", "0", "normal"),
+            ("GPIOA1A1-3", "FR-R", "DN", "9", "red_ern"),
+            ("GPIOB1A1-2", "FR-L", "UP", "0", "normal"),
+            ("GPIOB1A1-3", "FR-L", "UP", "0", "normal"),
+        ]
+
+    @staticmethod
+    def _1394_link_rows() -> List[Tuple[str, str, str]]:
+        return [
+            ("DMCL(VS)", "UP", "normal"),
+            ("DMCL(MS)", "UP", "normal"),
+            ("DMCR(VS)", "UP", "normal"),
+            ("DMCR(MS)", "UP", "normal"),
+            ("DMCH(VS)", "??", "red"),
+            ("DMCH(MS)", "??", "red"),
+            ("GPIOA1(VS)", "UP", "normal"),
+            ("GPIOB1(VS)", "UP", "normal"),
+        ]
 
     @staticmethod
     def _vs_bit_reason_titles() -> List[str]:
@@ -93,22 +157,48 @@ class PhmFormat(FormatBase):
         return str(subsystems[idx][0]).upper().strip()
 
     @staticmethod
-    def _request_phm_status_bit(keys: Iterable[str], duration_ms: int = 10000) -> None:
+    def _request_phm_status_bit(
+        keys: Iterable[str],
+        duration_ms: Optional[int] = None,
+        *,
+        system_name: str = "",
+        subsystem_name: str = "",
+    ) -> None:
         panel = PANEL_BUTTON_STATES if isinstance(PANEL_BUTTON_STATES, dict) else {}
         phm = panel.get("PHM STATUS", {}) if isinstance(panel, dict) else {}
         if not isinstance(phm, dict):
             return
         now_ms = int(pygame.time.get_ticks())
+        if duration_ms is None:
+            duration_ms = random.randint(5000, 30000)
         until = now_ms + max(0, int(duration_ms))
         bit_map = phm.get("bit_until_ms", {})
         if not isinstance(bit_map, dict):
             bit_map = {}
             phm["bit_until_ms"] = bit_map
+        bit_runs = phm.get("bit_runs", {})
+        if not isinstance(bit_runs, dict):
+            bit_runs = {}
+            phm["bit_runs"] = bit_runs
         for key in keys:
             norm = str(key).upper().strip()
             if norm == "":
                 continue
+            try:
+                active_until = int(bit_map.get(norm, 0))
+            except Exception:
+                active_until = 0
+            if active_until > now_ms:
+                continue
             bit_map[norm] = until
+            bit_runs[norm] = {
+                "target": norm,
+                "system": str(system_name or "").upper().strip(),
+                "subsystem": str(subsystem_name or norm).upper().strip(),
+                "end_ms": int(until),
+                "started_ms": int(now_ms),
+                "resolved": False,
+            }
 
     @staticmethod
     def _vs_bit_runtime_state() -> Tuple[str, List[str]]:
@@ -345,7 +435,9 @@ class PhmFormat(FormatBase):
                 sub_key = str(sub).upper().strip()
                 row_status = str(runtime_sub_status.get(sub_key, default_status)).upper().strip() or default_status
                 sub_debug_status = PhmFormat._phm_debug_status_for_key(sub)
-                if sub_debug_status != "OK":
+                if row_status == "TS":
+                    pass
+                elif sub_debug_status != "OK":
                     row_status = sub_debug_status
                 elif system_debug_status != "OK":
                     row_status = system_debug_status
@@ -364,7 +456,9 @@ class PhmFormat(FormatBase):
             sub_key = str(sub).upper().strip()
             row_status = str(runtime_sub_status.get(sub_key, default_status)).upper().strip() or default_status
             sub_debug_status = PhmFormat._phm_debug_status_for_key(sub)
-            if sub_debug_status != "OK":
+            if row_status == "TS":
+                pass
+            elif sub_debug_status != "OK":
                 row_status = sub_debug_status
             elif system_debug_status != "OK":
                 row_status = system_debug_status
@@ -389,11 +483,11 @@ class PhmFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def _draw_osbs(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
@@ -406,8 +500,8 @@ class PhmFormat(FormatBase):
 
         # L1/L2 INC/DEC triangles.
         if side_count >= 2:
-            l1_box = pygame.Rect(rect.x, rect.y + top_offset + (1 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
-            l2_box = pygame.Rect(rect.x, rect.y + top_offset + (2 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            l1_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (1 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            l2_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (2 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             tri_w = max(10, l1_box.width // 3)
             tri_h = max(10, l1_box.height // 3)
             l1_flash = bool(context.is_osb_flashing("L1"))
@@ -554,8 +648,8 @@ class PhmFormat(FormatBase):
 
         # L1/L2 INC/DEC.
         if side_count >= 2:
-            l1_box = pygame.Rect(rect.x, rect.y + top_offset + (1 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
-            l2_box = pygame.Rect(rect.x, rect.y + top_offset + (2 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            l1_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (1 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            l2_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (2 - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             tri_w = max(10, l1_box.width // 3)
             tri_h = max(10, l1_box.height // 3)
             l1_flash = bool(context.is_osb_flashing("L1"))
@@ -619,6 +713,157 @@ class PhmFormat(FormatBase):
             ),
         )
 
+    def _draw_inc_dec_osbs(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
+        cyan = (0, 255, 255)
+        white = (255, 255, 255)
+        top_count = 5 if rect.width < int(10 * DPI) else 10
+        side_count = 6 if rect.height >= int(7 * DPI) - 1 else 5
+        if side_count < 2:
+            return
+        top_offset = DISPLAY_OSB_H if top_count > 0 else 0
+        l1_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
+        l2_box = pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+        tri_w = max(10, l1_box.width // 3)
+        tri_h = max(10, l1_box.height // 3)
+        for label, box, direction in (("L1", l1_box, "up"), ("L2", l2_box, "down")):
+            col = white if bool(context.is_osb_flashing(label)) else cyan
+            cx = box.left + OSB_PADDING + tri_w // 2 + 2
+            cy = box.centery
+            if direction == "up":
+                pts = [(cx, cy - tri_h // 2), (cx - tri_w // 2, cy + tri_h // 2), (cx + tri_w // 2, cy + tri_h // 2)]
+            else:
+                pts = [(cx, cy + tri_h // 2), (cx - tri_w // 2, cy - tri_h // 2), (cx + tri_w // 2, cy - tri_h // 2)]
+            pygame.draw.polygon(surface, col, pts, 0)
+
+    def _draw_network_osbs(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
+        self._draw_inc_dec_osbs(surface, rect, context)
+        if self._submenu == "LINKS":
+            return
+        box = self._osb_box(rect, "R1")
+        if box is not None:
+            render_button(
+                surface,
+                box,
+                ButtonState(
+                    button_id="PHM_NTWRK_R1",
+                    button_type=ButtonType.PAGE_ACCESS,
+                    text="LINKS>",
+                    h_align="right",
+                    v_align="center",
+                    padding=OSB_PADDING,
+                    font_size=14,
+                    flash_until_ms=1 if context.is_osb_flashing("R1") else 0,
+                ),
+                get_font,
+                0,
+            )
+
+    def _draw_network_body(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        green = (0, 255, 0)
+        white = (255, 255, 255)
+        top_count = 5 if rect.width < int(10 * DPI) else 10
+        top_offset = DISPLAY_OSB_H if top_count > 0 else 0
+        l1_center_y = rect.y + top_offset - SIDE_OSB_Y_SHIFT + (DISPLAY_OSB_H // 2)
+        title_center_x = rect.left + (2 * GRID_CELL_W)
+        header_font = get_font(15)
+        body_font = get_font(14)
+        title_s = header_font.render("NETWORKS", True, green)
+        title_r = title_s.get_rect(center=(title_center_x, l1_center_y))
+        surface.blit(title_s, title_r)
+        pygame.draw.line(surface, green, (title_r.left, title_r.bottom + 1), (title_r.right, title_r.bottom + 1), 1)
+
+        opts = self._network_options()
+        self._network_selected_idx = max(0, min(int(self._network_selected_idx), max(0, len(opts) - 1)))
+        list_y = title_r.bottom + 10
+        row_h = body_font.get_height() + 4
+        text_x = title_r.left
+        star_s = body_font.render("*", True, white)
+        for idx, opt in enumerate(opts):
+            y = list_y + idx * row_h
+            opt_s = body_font.render(str(opt), True, green)
+            opt_r = opt_s.get_rect(x=text_x, y=y)
+            if idx == int(self._network_selected_idx):
+                surface.blit(star_s, star_s.get_rect(right=opt_r.left - 8, y=opt_r.y))
+            surface.blit(opt_s, opt_r)
+
+    def _link_rows_for_selected_network(self) -> Tuple[List[str], List[Tuple[str, ...]]]:
+        name = str(self._links_network_name or self._selected_network_name()).upper().strip()
+        if name.startswith("SWITCH A") or name.startswith("SWITCH B"):
+            return ["PORT", "NUM", "ST", "ErS", "ErN"], [tuple(r) for r in self._switch_link_rows(name)]
+        if name.startswith("PT-2-PT"):
+            return ["PORT", "DEST", "ST", "ErN"], [tuple(r) for r in self._pt2pt_link_rows()]
+        return ["PORT", "ST"], [tuple(r) for r in self._1394_link_rows()]
+
+    def _draw_links_body(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        green = (0, 255, 0)
+        white = (255, 255, 255)
+        red = (255, 0, 0)
+        yellow = (255, 255, 0)
+        top_count = 5 if rect.width < int(10 * DPI) else 10
+        top_offset = DISPLAY_OSB_H if top_count > 0 else 0
+        y_top = rect.y + top_offset - SIDE_OSB_Y_SHIFT
+        center_x = rect.centerx
+        header_font = get_font(15)
+        table_font = get_font(11)
+        header_y = y_top + 4
+        title = str(self._links_network_name or self._selected_network_name())
+        title_s = header_font.render(title, True, green)
+        title_r = title_s.get_rect(centerx=center_x, y=header_y)
+        surface.blit(title_s, title_r)
+
+        columns, rows = self._link_rows_for_selected_network()
+        row_count = len(rows)
+        self._links_selected_idx = max(0, min(int(self._links_selected_idx), max(0, row_count - 1)))
+        l6_top = rect.y + top_offset - SIDE_OSB_Y_SHIFT + (5 * DISPLAY_OSB_H)
+        selected_text = ""
+        if row_count > 0:
+            selected_text = str(rows[int(self._links_selected_idx)][0])
+        selected_s = table_font.render(selected_text, True, green)
+        surface.blit(selected_s, selected_s.get_rect(centerx=center_x, y=l6_top + 2))
+
+        table_left = rect.left + GRID_CELL_W + 12
+        table_right = rect.right - GRID_CELL_W - 12
+        table_w = max(1, table_right - table_left)
+        if len(columns) == 5:
+            col_fracs = [0.00, 0.43, 0.60, 0.72, 0.86]
+        elif len(columns) == 4:
+            col_fracs = [0.00, 0.48, 0.68, 0.84]
+        else:
+            col_fracs = [0.00, 0.62]
+        col_x = [int(table_left + table_w * f) for f in col_fracs]
+        col_y = title_r.bottom + 14
+        for idx, col in enumerate(columns):
+            surface.blit(table_font.render(col, True, green), (col_x[idx], col_y))
+        underline_y = col_y + table_font.get_height() + 1
+        underline_right = table_right
+        if len(columns) == 2 and len(col_x) >= 2:
+            underline_right = col_x[1] + table_font.size(str(columns[1]))[0]
+        pygame.draw.line(surface, green, (table_left, underline_y), (underline_right, underline_y), 1)
+
+        row_h = max(10, min(table_font.get_height() + 2, max(8, (l6_top - underline_y - 6) // max(1, row_count))))
+        y = underline_y + 4
+        star_s = table_font.render("*", True, white)
+        for idx, row in enumerate(rows):
+            if y + table_font.get_height() > l6_top:
+                break
+            style = str(row[-1])
+            values = [str(v) for v in row[:-1]]
+            base_color = green
+            if style == "white":
+                base_color = white
+            elif style in {"red", "red_ers", "red_ern"}:
+                base_color = red
+            if idx == int(self._links_selected_idx):
+                surface.blit(star_s, star_s.get_rect(right=table_left - 5, y=y))
+            for col_idx, val in enumerate(values):
+                color = base_color
+                if style == "red_ers" and col_idx == 3:
+                    color = yellow
+                if style == "red_ern" and col_idx == 3:
+                    color = yellow
+                surface.blit(table_font.render(val, True, color), (col_x[min(col_idx, len(col_x) - 1)], y))
+            y += row_h
+
     def _draw_msstat_osbs(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
         # Intentionally no L1/L2, T3, R1, R2 labels on MSSTAT per spec.
         return
@@ -635,7 +880,7 @@ class PhmFormat(FormatBase):
 
         top_count = 5 if rect.width < int(10 * DPI) else 10
         top_offset = DISPLAY_OSB_H if top_count > 0 else 0
-        y_top = rect.y + top_offset
+        y_top = rect.y + top_offset - SIDE_OSB_Y_SHIFT
         header_y = y_top + 4
         center_x = rect.centerx
 
@@ -779,7 +1024,7 @@ class PhmFormat(FormatBase):
 
         top_count = 5 if rect.width < int(10 * DPI) else 10
         top_offset = DISPLAY_OSB_H if top_count > 0 else 0
-        y_top = rect.y + top_offset
+        y_top = rect.y + top_offset - SIDE_OSB_Y_SHIFT
         full_bottom = rect.y + (8 * GRID_CELL_H)
         bottom_limit = full_bottom - 6
 
@@ -936,6 +1181,13 @@ class PhmFormat(FormatBase):
                     self._status_page_idx = 0
                     self._status_selected_sub_idx = 0
                     self._status_system_name = self._selected_system_name()
+                elif action == "open_network":
+                    self._submenu = "NTWRK"
+                    self._network_selected_idx = max(0, min(int(self._network_selected_idx), len(self._network_options()) - 1))
+                elif action == "open_links":
+                    self._submenu = "LINKS"
+                    self._links_network_name = self._selected_network_name()
+                    self._links_selected_idx = 0
                 elif action == "close_status":
                     self._submenu = None
                     self._status_selected_sub_idx = 0
@@ -943,7 +1195,7 @@ class PhmFormat(FormatBase):
                 self._pending_submenu_action = None
         prev_clip = surface.get_clip()
         clip_rect = rect
-        if is_primary and self._submenu in {"STATUS", "MSSTAT"}:
+        if is_primary and self._submenu in {"STATUS", "MSSTAT", "NTWRK", "LINKS"}:
             clip_rect = pygame.Rect(rect.x, rect.y, rect.width, max(rect.height, 8 * GRID_CELL_H))
         surface.set_clip(clip_rect)
         pygame.draw.rect(surface, (0, 255, 255), rect, 1)
@@ -961,6 +1213,8 @@ class PhmFormat(FormatBase):
             self._draw_status_osbs(surface, rect, context)
         elif self._submenu == "MSSTAT":
             self._draw_msstat_osbs(surface, rect, context)
+        elif self._submenu in {"NTWRK", "LINKS"}:
+            self._draw_network_osbs(surface, rect, context)
         elif self._submenu != "SVC":
             self._draw_osbs(surface, rect, context)
         else:
@@ -969,7 +1223,7 @@ class PhmFormat(FormatBase):
 
         top_count = 5 if rect.width < int(10 * DPI) else 10
         top_offset = DISPLAY_OSB_H if top_count > 0 else 0
-        y_top = rect.y + top_offset
+        y_top = rect.y + top_offset - SIDE_OSB_Y_SHIFT
         y_bottom = y_top + int(4.5 * GRID_CELL_H)
         center_x = rect.centerx
         gray = (128, 128, 128)
@@ -1015,6 +1269,10 @@ class PhmFormat(FormatBase):
             self._draw_status_body(surface, rect)
         elif self._submenu == "MSSTAT":
             self._draw_msstat_body(surface, rect)
+        elif self._submenu == "NTWRK":
+            self._draw_network_body(surface, rect)
+        elif self._submenu == "LINKS":
+            self._draw_links_body(surface, rect)
         else:
             left_header = "VEHCL SYSTMS"
             right_header = "MSSN SYSTMS"
@@ -1119,7 +1377,11 @@ class PhmFormat(FormatBase):
             if self._submenu == "SVC":
                 self._pending_submenu_action = ("close_svc", pygame.time.get_ticks() + 250)
                 return True
-            if self._submenu in {"STATUS", "MSSTAT"}:
+            if self._submenu == "LINKS":
+                self._submenu = "NTWRK"
+                self._links_selected_idx = 0
+                return True
+            if self._submenu in {"STATUS", "MSSTAT", "NTWRK", "LINKS"}:
                 self._submenu = None
                 self._status_page_idx = 0
                 self._status_selected_sub_idx = 0
@@ -1146,6 +1408,26 @@ class PhmFormat(FormatBase):
                 return True
             if self._submenu == "MSSTAT":
                 return False
+            if self._submenu == "NTWRK":
+                opts = self._network_options()
+                if len(opts) <= 0:
+                    self._network_selected_idx = 0
+                    return True
+                if label == "L1":
+                    self._network_selected_idx = (int(self._network_selected_idx) - 1) % len(opts)
+                else:
+                    self._network_selected_idx = (int(self._network_selected_idx) + 1) % len(opts)
+                return True
+            if self._submenu == "LINKS":
+                _columns, rows = self._link_rows_for_selected_network()
+                if len(rows) <= 0:
+                    self._links_selected_idx = 0
+                    return True
+                if label == "L1":
+                    self._links_selected_idx = (int(self._links_selected_idx) - 1) % len(rows)
+                else:
+                    self._links_selected_idx = (int(self._links_selected_idx) + 1) % len(rows)
+                return True
             total = len(self._vehicle_systems()) + len(self._mission_systems())
             if total <= 0:
                 return True
@@ -1163,11 +1445,16 @@ class PhmFormat(FormatBase):
                 selected_system = str(self._status_active_system_name()).upper().strip()
                 selected_sub = self._status_selected_subsystem_name()
                 keys: List[str] = []
-                if selected_system != "":
-                    keys.append(selected_system)
-                if selected_sub != "" and selected_sub not in keys:
+                if selected_sub != "":
                     keys.append(selected_sub)
-                self._request_phm_status_bit(keys, 10000)
+                elif selected_system != "":
+                    keys.append(selected_system)
+                self._request_phm_status_bit(
+                    keys,
+                    None,
+                    system_name=selected_system,
+                    subsystem_name=selected_sub,
+                )
                 return True
             if label == "R1":
                 self._pending_submenu_action = ("open_svc", pygame.time.get_ticks() + 250)
@@ -1184,7 +1471,16 @@ class PhmFormat(FormatBase):
             return False
         if self._submenu == "MSSTAT":
             return False
-        if label in {"T3", "R4"}:
+        if self._submenu == "NTWRK":
+            if label == "R1":
+                self._pending_submenu_action = ("open_links", pygame.time.get_ticks() + 250)
+                return True
+            return False
+        if self._submenu == "LINKS":
+            if label == "R1":
+                return True
+            return False
+        if label in {"T3"}:
             return True
         if label == "T2":
             self._pending_submenu_action = ("open_status", pygame.time.get_ticks() + 250)
@@ -1195,6 +1491,9 @@ class PhmFormat(FormatBase):
         if label == "R3":
             self._pending_submenu_action = ("open_svc", pygame.time.get_ticks() + 250)
             return True
+        if label == "R4":
+            self._pending_submenu_action = ("open_network", pygame.time.get_ticks() + 250)
+            return True
         return False
 
     def osb_is_interactive(self, label: str) -> bool:
@@ -1202,6 +1501,10 @@ class PhmFormat(FormatBase):
             return label in {"T1", "L1", "L2", "T3", "R1", "R2"}
         if self._submenu == "MSSTAT":
             return label == "T1"
+        if self._submenu == "NTWRK":
+            return label in {"T1", "L1", "L2", "R1"}
+        if self._submenu == "LINKS":
+            return label in {"T1", "L1", "L2"}
         if self._submenu == "SVC":
             return label == "T1"
         if label in {"L3", "L5", "T3"}:
@@ -1215,6 +1518,10 @@ class PhmFormat(FormatBase):
             return [("PHM", (0, 255, 0)), ("STATUS", (255, 0, 255)), ("", (0, 0, 0))]
         if self._submenu == "MSSTAT":
             return [("PHM", (0, 255, 0)), ("MSSTAT", (255, 0, 255)), ("", (0, 0, 0))]
+        if self._submenu == "NTWRK":
+            return [("PHM", (0, 255, 0)), ("NTWRK", (255, 0, 255)), ("", (0, 0, 0))]
+        if self._submenu == "LINKS":
+            return [("PHM", (0, 255, 0)), ("LINKS", (255, 0, 255)), ("", (0, 0, 0))]
         return None
 
     def t1_opens_menu(self) -> bool:
@@ -1224,4 +1531,4 @@ class PhmFormat(FormatBase):
         return False
 
     def opaque_subportal_background(self) -> bool:
-        return self._submenu in {"STATUS", "MSSTAT"}
+        return self._submenu in {"STATUS", "MSSTAT", "NTWRK", "LINKS"}

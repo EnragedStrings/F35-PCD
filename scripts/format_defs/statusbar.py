@@ -970,8 +970,17 @@ class StatusBarFormat(FormatBase):
                 y3 = r.top + 39
                 y4 = r.top + 56
                 local_time, zulu_time = _wind_status_button_times()
-                surface.blit(f.render(local_time, True, white), (x, y1))
-                surface.blit(f.render(zulu_time, True, cyan), (x, y2))
+                if _wind_stopwatch_is_visible():
+                    sw = f.render(_wind_stopwatch_status_text(), True, white)
+                    sw_rect = sw.get_rect(right=r.right - 6, top=y1)
+                    surface.blit(sw, sw_rect)
+                    mode = _wind_display_mode_label()
+                    selected_time = local_time if mode == "LOCAL" else zulu_time
+                    selected_color = white if mode == "LOCAL" else cyan
+                    surface.blit(f.render(selected_time, True, selected_color), (x, y2))
+                else:
+                    surface.blit(f.render(local_time, True, white), (x, y1))
+                    surface.blit(f.render(zulu_time, True, cyan), (x, y2))
                 surface.blit(f.render("WIND:", True, cyan), (x, y3))
                 surface.blit(f.render("360/    0", True, cyan), (x, y4))
             if lbl == "IFF":

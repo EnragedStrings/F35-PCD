@@ -164,11 +164,11 @@ class IcawsFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def _draw_inc_dec_symbols(self, surface: pygame.Surface, rect: pygame.Rect) -> None:

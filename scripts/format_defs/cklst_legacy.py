@@ -235,16 +235,16 @@ class CklstLegacyFormat(FormatBase):
             return pygame.Rect(rect.x + (idx - 1) * GRID_CELL_W, rect.y, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "L":
             if idx == 7:
-                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx == 7:
-                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:

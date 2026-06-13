@@ -120,7 +120,7 @@ class TwdFormat(FormatBase):
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     @staticmethod
     def _draw_data_entry_popup(surface: pygame.Surface, rect: pygame.Rect) -> None:
@@ -203,11 +203,11 @@ class TwdFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     @staticmethod
@@ -986,7 +986,9 @@ class TwdFormat(FormatBase):
         contacts = self._iter_twd_contacts()
         if len(contacts) <= 0:
             return
-        icon_px = max(5, int(round(0.45 * DPI * 0.75 * 0.5)))
+        # Keep icon size proportional to the active TWD ring scale.  Full-size
+        # TWD uses a 2.1in outer radius; subportals pass a smaller r_outer.
+        icon_px = max(4, int(round(float(r_outer) * ((0.45 * 0.75 * 0.5) / 2.1))))
         edge_margin = max(6.0, float(icon_px) * 0.65)
         rank_map = {"FOE": 1, "SUSPECT": 2, "UNKNOWN": 3}
         items: List[Dict[str, object]] = []
@@ -1138,7 +1140,7 @@ class TwdFormat(FormatBase):
     @staticmethod
     def _gol_popup_rows(rect: pygame.Rect) -> Tuple[int, int]:
         is_5x7 = rect.height >= int(7 * DPI) - 1
-        row_start = 3 if is_5x7 else 2
+        row_start = 3
         return row_start, row_start + 3
 
     def _popup_grid_rect(self, base_rect: pygame.Rect) -> pygame.Rect:
@@ -1155,7 +1157,7 @@ class TwdFormat(FormatBase):
             x = int(base_rect.x) if (idx % 2 == 0) else int(base_rect.right - popup_w)
         else:
             x = int(base_rect.x + max(0, (width - popup_w) // 2))
-        return pygame.Rect(x, base_rect.top, popup_w, popup_h)
+        return pygame.Rect(x, base_rect.top - SIDE_OSB_Y_SHIFT, popup_w, popup_h)
 
     def _popup_cell_rect(self, rect: pygame.Rect, cell: str) -> Optional[pygame.Rect]:
         txt = str(cell).upper().strip()
@@ -1342,18 +1344,25 @@ class TwdFormat(FormatBase):
             heading_deg = self._read_heading_deg()
             sym_color = (255, 255, 255)
             green = (0, 255, 0)
+            title_font_size = 10
+            title_clearance = max(14, int(round(0.24 * DPI)))
 
-            # Scale 4.2in symbology to fit subportal while preserving proportions.
+            # Scale 4.2in symbology to fit the upper subportal area.  Keep
+            # clear of the bottom title row, which is always visible.
             target_diam = 4.2 * DPI
             fit_w = max(1, rect.width - 8)
-            fit_h = max(1, rect.height - 8)
-            sub_scale = max(0.2, min(1.0, min(fit_w / float(target_diam), fit_h / float(target_diam))))
-            center = rect.center
+            fit_h = max(1, rect.height - title_clearance - 8)
+            sub_scale = max(0.16, min(0.82, min(fit_w / float(target_diam), fit_h / float(target_diam))))
 
             r_outer = 2.1 * DPI * sub_scale
             r_mid = 1.25 * DPI * sub_scale
             r_inner = 0.5 * DPI * sub_scale
             r_center = 0.125 * DPI * sub_scale
+            usable_top = rect.top + 4
+            usable_bottom = rect.bottom - title_clearance - 4
+            center_y = int(round(usable_top + r_outer))
+            center_y = max(int(round(usable_top + r_outer)), min(int(round(usable_bottom - r_outer)), center_y))
+            center = (rect.centerx, center_y)
             for radius in (r_outer, r_mid, r_inner, r_center):
                 pygame.draw.circle(surface, sym_color, center, int(round(radius)), 1)
             sep_held = self._sep_is_held(rect, is_primary=False)
@@ -1400,7 +1409,7 @@ class TwdFormat(FormatBase):
             surface.blit(semi, semi_rect)
 
             # Subportal format label.
-            twd_font = get_font(max(10, int(round(11 * sub_scale))))
+            twd_font = get_font(max(9, int(round(title_font_size * max(0.9, sub_scale)))))
             twd_surf = twd_font.render("TWD", True, (0, 255, 255))
             twd_rect = twd_surf.get_rect(centerx=rect.centerx, bottom=rect.bottom - 2)
             surface.blit(twd_surf, twd_rect)

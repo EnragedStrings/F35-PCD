@@ -44,6 +44,7 @@ DPI = 1920 // 20
 GRID_CELL_W = int(1 * DPI)
 GRID_CELL_H = int((7 / 8) * DPI)
 DISPLAY_OSB_H = int(0.875 * DPI)
+SIDE_OSB_Y_SHIFT = int(0.25 * DPI)
 OSB_PADDING = 10
 HAZARD_BORDER_THICKNESS = 7
 HAZARD_STRIPE_LINE_WIDTH = 5
@@ -449,6 +450,31 @@ def _wind_stopwatch_elapsed_s() -> float:
         elapsed += max(0.0, float(time.monotonic()) - anchor)
     return elapsed
 
+
+def _wind_stopwatch_is_visible() -> bool:
+    _wind_init_state()
+    if bool(WIND_STATE.get("stopwatch_running", False)):
+        return True
+    return _wind_stopwatch_elapsed_s() > 0.0
+
+
+def _wind_stopwatch_status_text() -> str:
+    total = int(max(0.0, _wind_stopwatch_elapsed_s()))
+    hh = total // 3600
+    mm = (total % 3600) // 60
+    ss = total % 60
+    if hh > 0:
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+    if mm > 0:
+        return f":{mm:02d}:{ss:02d}"
+    return f":{ss:02d}"
+
+
+def _wind_display_mode_label() -> str:
+    _wind_init_state()
+    mode = str(WIND_STATE.get("display_mode", "LOCAL")).upper().strip()
+    return "ZULU" if mode == "ZULU" else "LOCAL"
+
 def _new_tsd_state() -> Dict[str, object]:
     return {
         "view_idx": 0,  # 0=HSD, 1=VSD
@@ -480,6 +506,9 @@ def _new_tsd_state() -> Dict[str, object]:
         "dclt_submenu": "",
         "dclt_data_selected": "",
         "dclt_data_input": "",
+        "dclt_data_dirty": False,
+        "dclt_data_error": "",
+        "dclt_defaults_version": 2,
         "_popup_anchor_portal_idx": 0,
         "dclt_aa_on": True,
         "dclt_as_on": True,
@@ -487,9 +516,9 @@ def _new_tsd_state() -> Dict[str, object]:
         "dclt_rgn1_on": True,
         "dclt_rgn2_on": True,
         "dclt_rgn3_on": True,
-        "dclt_max_air": 95,
-        "dclt_max_sur": 86,
-        "dclt_max_eob": 86,
+        "dclt_max_air": 16,
+        "dclt_max_sur": 32,
+        "dclt_max_eob": 16,
         "dclt_ears_on": False,
         "dclt_unrng_on": True,
         "dclt_route_idx": 1,
@@ -1453,15 +1482,18 @@ def get_current_icaws_alerts() -> List[Tuple[str, str]]:
         _icaw_set_alert(alerts, "HYD FAIL DUAL", "warning")
         alerts[:] = [a for a in alerts if str(a[0]).strip().upper() not in {"HYD FAIL A", "HYD FAIL B"}]
 
+    if _icaw_has_text(alerts, "GEN FAIL 1") and _icaw_has_text(alerts, "GEN FAIL 2"):
+        _icaw_set_alert(alerts, "GEN FAIL 1&2", "warning")
+
     hidden_binding_alerts: List[Tuple[str, str]] = []
-    # GEN FAIL 1&2 should attach GEN FAIL 1 / GEN FAIL 2 HRC behavior,
-    # but the combined ICAW itself should not display.
+    # GEN FAIL 1&2 displays as the warning, but it inherits the HRC behavior
+    # from the two underlying single-generator caution alerts.
     if _icaw_has_text(alerts, "GEN FAIL 1&2"):
         for name in ("GEN FAIL 1", "GEN FAIL 2"):
             norm = _icaw_normalize_alert(name, "caution")
             if norm is not None:
                 hidden_binding_alerts.append(norm)
-        alerts[:] = [a for a in alerts if str(a[0]).strip().upper() != "GEN FAIL 1&2"]
+        alerts[:] = [a for a in alerts if str(a[0]).strip().upper() not in {"GEN FAIL 1", "GEN FAIL 2"}]
     ICAWS_STATE["_hidden_binding_alerts"] = hidden_binding_alerts
 
     _icaw_sync_hrc_bindings(alerts)
@@ -1584,6 +1616,7 @@ class FormatContext:
 
 class FormatBase:
     name: str = "UNKNOWN"
+    _LOCAL_FLASH_MS = 250
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         pass
@@ -1596,6 +1629,27 @@ class FormatBase:
 
     def get_t1_override(self, system_mode: str) -> Optional[List[Tuple[str, Tuple[int, int, int]]]]:
         return None
+
+    def _trigger_local_flash(self, key: str, ms: Optional[int] = None) -> None:
+        try:
+            flash = getattr(self, "_local_flash_until", None)
+            if not isinstance(flash, dict):
+                flash = {}
+                setattr(self, "_local_flash_until", flash)
+            duration = int(self._LOCAL_FLASH_MS if ms is None else ms)
+            flash[str(key).upper().strip()] = int(pygame.time.get_ticks()) + max(1, duration)
+        except Exception:
+            pass
+
+    def _local_flash_active(self, key: str, now_ms: Optional[int] = None) -> bool:
+        try:
+            flash = getattr(self, "_local_flash_until", None)
+            if not isinstance(flash, dict):
+                return False
+            now = int(pygame.time.get_ticks()) if now_ms is None else int(now_ms)
+            return int(flash.get(str(key).upper().strip(), 0) or 0) > now
+        except Exception:
+            return False
 
     def t1_opens_menu(self) -> bool:
         if self._is_vsd():

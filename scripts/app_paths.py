@@ -4,25 +4,40 @@ import sys
 from pathlib import Path
 from typing import Iterable, List
 
+_APP_BASE_DIR_CACHE: Path | None = None
+_BUNDLE_BASE_DIR_CACHE: Path | None = None
+_WRITABLE_BASE_DIR_CACHE: Path | None = None
+
 
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
 def app_base_dir() -> Path:
+    global _APP_BASE_DIR_CACHE
+    if _APP_BASE_DIR_CACHE is not None:
+        return _APP_BASE_DIR_CACHE
     if is_frozen():
-        return Path(sys.executable).resolve().parent
+        _APP_BASE_DIR_CACHE = Path(sys.executable).resolve().parent
+        return _APP_BASE_DIR_CACHE
     module_dir = Path(__file__).resolve().parent
     if module_dir.name.lower() == "scripts":
-        return module_dir.parent
-    return module_dir
+        _APP_BASE_DIR_CACHE = module_dir.parent
+    else:
+        _APP_BASE_DIR_CACHE = module_dir
+    return _APP_BASE_DIR_CACHE
 
 
 def bundle_base_dir() -> Path:
+    global _BUNDLE_BASE_DIR_CACHE
+    if _BUNDLE_BASE_DIR_CACHE is not None:
+        return _BUNDLE_BASE_DIR_CACHE
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        return Path(meipass)
-    return app_base_dir()
+        _BUNDLE_BASE_DIR_CACHE = Path(meipass)
+    else:
+        _BUNDLE_BASE_DIR_CACHE = app_base_dir()
+    return _BUNDLE_BASE_DIR_CACHE
 
 
 def _app_data_root() -> Path:
@@ -48,9 +63,14 @@ def writable_base_dir() -> Path:
     - Development (not frozen): project/app directory (current behavior).
     - Frozen binaries: user data directory (Linux/macOS/Windows friendly).
     """
+    global _WRITABLE_BASE_DIR_CACHE
+    if _WRITABLE_BASE_DIR_CACHE is not None:
+        return _WRITABLE_BASE_DIR_CACHE
     if not is_frozen():
-        return app_base_dir()
-    return _app_data_root()
+        _WRITABLE_BASE_DIR_CACHE = app_base_dir()
+    else:
+        _WRITABLE_BASE_DIR_CACHE = _app_data_root()
+    return _WRITABLE_BASE_DIR_CACHE
 
 
 def resource_path(*parts: str) -> Path:

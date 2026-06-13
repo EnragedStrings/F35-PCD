@@ -697,18 +697,79 @@ class SmsFormat(FormatBase):
         token = str(wpn_value).upper().strip()
         if token == "":
             return ""
-        mapped = str(SmsFormat._inv_weapon_aliases().get(token, "")).strip()
-        return mapped
+        weapons_raw = SmsFormat._stores_json().get("weapons", {})
+        weapons = weapons_raw if isinstance(weapons_raw, dict) else {}
+        aliases = SmsFormat._inv_weapon_aliases()
+        candidates = [
+            str(aliases.get(token, "")).strip(),
+            str(SmsFormat._INV_WPN_TO_STORE_ID.get(token, "")).strip(),
+            token,
+        ]
+        norm_token = SmsFormat._inv_norm_token(token)
+        for candidate in candidates:
+            if candidate != "" and candidate in weapons:
+                return candidate
+        for key in weapons.keys():
+            if SmsFormat._inv_norm_token(key) == norm_token:
+                return str(key)
+        for candidate in candidates:
+            if candidate != "":
+                return candidate
+        return token
+
+    @staticmethod
+    def _resolve_store_icon_path(filename: str) -> Optional[Path]:
+        name = str(filename).strip().replace("\\", "/")
+        if name == "":
+            return None
+        root = resource_path("icons", "SMS", "STORES")
+        direct = root.joinpath(*[part for part in name.split("/") if part != ""])
+        try:
+            if direct.exists():
+                return direct
+        except Exception:
+            pass
+        basename = Path(name).name
+        if basename == "":
+            return None
+        try:
+            flat = root / basename
+            if flat.exists():
+                return flat
+        except Exception:
+            pass
+        try:
+            norm_target = SmsFormat._inv_norm_token(Path(basename).stem)
+            for candidate in root.rglob("*.png"):
+                if candidate.name.upper() == basename.upper():
+                    return candidate
+                if SmsFormat._inv_norm_token(candidate.stem) == norm_target:
+                    return candidate
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _find_store_icon_name_for_weapon(*tokens: str) -> str:
+        wanted = [SmsFormat._inv_norm_token(token) for token in tokens if str(token).strip() != ""]
+        wanted = [token for token in wanted if token != ""]
+        if len(wanted) <= 0:
+            return ""
+        root = resource_path("icons", "SMS", "STORES")
+        try:
+            for candidate in root.rglob("*.png"):
+                if SmsFormat._inv_norm_token(candidate.stem) in wanted:
+                    try:
+                        return str(candidate.relative_to(root)).replace("\\", "/")
+                    except Exception:
+                        return str(candidate)
+        except Exception:
+            return ""
+        return ""
 
     @staticmethod
     def _inv_store_icon_exists(icon_name: str) -> bool:
-        name = str(icon_name).strip()
-        if name == "":
-            return False
-        try:
-            return resource_path("icons", "SMS", "STORES", name).exists()
-        except Exception:
-            return False
+        return SmsFormat._resolve_store_icon_path(icon_name) is not None
 
     @staticmethod
     def _inv_store_load_metadata(wpn_value: str) -> Tuple[str, str, str]:
@@ -724,6 +785,8 @@ class SmsFormat(FormatBase):
         icon_name = str(meta.get("icon", "")).strip()
         if icon_name != "" and not SmsFormat._inv_store_icon_exists(icon_name):
             icon_name = ""
+        if icon_name == "":
+            icon_name = SmsFormat._find_store_icon_name_for_weapon(token, store_id)
         store_type = str(meta.get("type", "AS")).upper().strip()
         if store_type not in {"AS", "SRM", "MRM"}:
             store_type = "AS"
@@ -954,6 +1017,201 @@ class SmsFormat(FormatBase):
         self._set_inv_qty_max(qty_max)
         self._set_inv_qty_value(qty_value)
         return type_options, rack_options, wpn_options, fuze_options, fuze_mode_options, qty_max, qty_value
+
+    @staticmethod
+    def _inv_load_option_cells() -> List[str]:
+        return [
+            "A4", "B4", "C4",
+            "A5", "B5", "C5",
+            "A6", "B6", "C6",
+            "A7", "B7", "C7",
+        ]
+
+    @staticmethod
+    def _inv_load_edge_cell_for_osb(token: str) -> str:
+        # Edge popup cells overlap side OSB hit zones, so route those OSBs back
+        # to the same logical cells used by direct grid clicks.
+        mapping = {
+            "L3": "A4",
+            "L4": "A5",
+            "L5": "A6",
+            "L6": "A7",
+            "L7": "A8",
+            "R3": "C4",
+            "R4": "C5",
+            "R5": "C6",
+            "R6": "C7",
+            "R7": "A8",
+        }
+        return mapping.get(str(token).upper().strip(), "")
+
+    @staticmethod
+    def _inv_station_for_edge_osb(token: str) -> str:
+        mapping = {
+            "L5": "STA3",
+            "L6": "STA2",
+            "L7": "STA1",
+        }
+        return mapping.get(str(token).upper().strip(), "")
+
+    def _inv_load_options_for_selection(
+        self,
+        current_sel: str,
+        type_opts: List[str],
+        rack_opts: List[str],
+        wpn_opts: List[str],
+        fuze_opts: List[str],
+        fuze_mode_opts: List[str],
+    ) -> List[str]:
+        if current_sel == "TYPE":
+            return list(type_opts)
+        if current_sel == "RACK":
+            return list(rack_opts)
+        if current_sel == "WPN":
+            return list(wpn_opts)
+        if current_sel == "FUZE":
+            return list(fuze_mode_opts if self._cntl_inv_load_fuze_mode_open() else fuze_opts)
+        return []
+
+    def _inv_apply_load_option_choice(self, current_sel: str, chosen: str) -> None:
+        chosen = str(chosen).upper().strip()
+        if current_sel == "TYPE":
+            self._set_cntl_inv_load_type_value(chosen)
+            self._set_inv_rack_value("")
+            self._set_inv_wpn_value("")
+            self._set_inv_fuze_value("")
+            self._set_inv_fuze_mode_value("")
+            self._set_cntl_inv_load_fuze_mode_open(False)
+            self._set_inv_qty_value(0)
+            self._set_inv_qty_max(0)
+            # Auto-advance to RACK and keep options open.
+            self._set_cntl_inv_load_selected_field("RACK")
+            self._set_cntl_inv_load_type_menu_open(True)
+            self._set_cntl_inv_load_type_page(0)
+        elif current_sel == "RACK":
+            self._set_inv_rack_value(chosen)
+            self._set_inv_wpn_value("")
+            self._set_inv_fuze_value("")
+            self._set_inv_fuze_mode_value("")
+            self._set_cntl_inv_load_fuze_mode_open(False)
+            self._set_inv_qty_value(0)
+            self._set_inv_qty_max(0)
+            # Auto-advance to WPN and keep options open.
+            self._set_cntl_inv_load_selected_field("WPN")
+            self._set_cntl_inv_load_type_menu_open(True)
+            self._set_cntl_inv_load_type_page(0)
+        elif current_sel == "WPN":
+            self._set_inv_wpn_value(chosen)
+            self._set_inv_fuze_value("")
+            self._set_inv_fuze_mode_value("")
+            self._set_cntl_inv_load_fuze_mode_open(False)
+            # Default QNTY to max for the chosen weapon.
+            _t, _r, _w, _f, _fm, qmax_now, _q = self._sync_inv_load_selection_state()
+            if qmax_now > 0:
+                self._set_inv_qty_value(qmax_now)
+            self._inv_apply_selected_store_request()
+            if self._inv_is_gbu_wpn(chosen):
+                self._set_cntl_inv_load_selected_field("FUZE")
+                self._set_cntl_inv_load_type_menu_open(True)
+                self._set_cntl_inv_load_type_page(0)
+                self._set_cntl_inv_load_fuze_mode_open(False)
+            else:
+                self._set_cntl_inv_load_type_menu_open(False)
+        elif current_sel == "FUZE":
+            if self._cntl_inv_load_fuze_mode_open():
+                self._set_inv_fuze_mode_value(chosen)
+                self._inv_apply_selected_store_request()
+                self._set_cntl_inv_load_fuze_mode_open(False)
+                self._set_cntl_inv_load_type_menu_open(False)
+            else:
+                self._set_inv_fuze_value(chosen)
+                self._set_inv_fuze_mode_value("")
+                next_modes = self._inv_available_fuze_modes(self._inv_wpn_value(), chosen)
+                if len(next_modes) > 0:
+                    self._set_cntl_inv_load_fuze_mode_open(True)
+                    self._set_cntl_inv_load_type_menu_open(True)
+                    self._set_cntl_inv_load_type_page(0)
+                else:
+                    self._inv_apply_selected_store_request()
+                    self._set_cntl_inv_load_fuze_mode_open(False)
+                    self._set_cntl_inv_load_type_menu_open(False)
+
+    def _inv_select_load_option_cell(
+        self,
+        cell: str,
+        current_sel: str,
+        type_opts: List[str],
+        rack_opts: List[str],
+        wpn_opts: List[str],
+        fuze_opts: List[str],
+        fuze_mode_opts: List[str],
+    ) -> bool:
+        opts = self._inv_load_options_for_selection(current_sel, type_opts, rack_opts, wpn_opts, fuze_opts, fuze_mode_opts)
+        pages = self._inv_option_pages(opts, page_size=12)
+        cell = str(cell).upper().strip()
+        if cell == "A8" and len(pages) > 1:
+            page = self._cntl_inv_load_type_page()
+            self._set_cntl_inv_load_type_page((page + 1) % len(pages))
+            return True
+        page = self._cntl_inv_load_type_page()
+        if page >= len(pages):
+            page = max(0, len(pages) - 1)
+            self._set_cntl_inv_load_type_page(page)
+        active = pages[page] if len(pages) > 0 else []
+        opt_cells = self._inv_load_option_cells()
+        if cell not in opt_cells:
+            return False
+        idx = opt_cells.index(cell)
+        if idx < len(active):
+            self._inv_apply_load_option_choice(current_sel, str(active[idx]).upper().strip())
+        return True
+
+    @staticmethod
+    def _inv_qty_key_for_cell(cell: str) -> str:
+        key_cells: Dict[str, str] = {
+            "A4": "1", "B4": "2", "C4": "3",
+            "A5": "4", "B5": "5", "C5": "6",
+            "A6": "7", "B6": "8", "C6": "9",
+            "B7": "0", "C7": "BACK",
+            "A7": "INC", "A8": "DEC",
+        }
+        return key_cells.get(str(cell).upper().strip(), "")
+
+    def _inv_apply_qty_key_cell(self, cell: str, qty: int, qmax: int) -> bool:
+        token = self._inv_qty_key_for_cell(cell)
+        if token == "":
+            return False
+        cell = str(cell).upper().strip()
+        self._trigger_local_flash(f"QTY_KEYPAD_{cell}")
+        if token == "INC":
+            if qmax > 0:
+                new_qty = min(qmax, max(1, qty + 1))
+                self._set_inv_qty_value(new_qty)
+                SmsFormat._ui_set("cntl_inv_load_qty_input", str(max(1, min(9, new_qty))))
+                self._inv_apply_selected_store_request()
+            return True
+        if token == "DEC":
+            if qmax > 0:
+                new_qty = max(1, min(qmax, qty - 1))
+                self._set_inv_qty_value(new_qty)
+                SmsFormat._ui_set("cntl_inv_load_qty_input", str(max(1, min(9, new_qty))))
+                self._inv_apply_selected_store_request()
+            return True
+        input_txt = str(SmsFormat._ui_get("cntl_inv_load_qty_input", ""))
+        if token == "BACK":
+            input_txt = input_txt[:-1]
+        else:
+            input_txt = str(token)[:1]
+        SmsFormat._ui_set("cntl_inv_load_qty_input", input_txt)
+        try:
+            typed = int(input_txt) if input_txt != "" else qty
+        except Exception:
+            typed = qty
+        if qmax > 0:
+            typed = max(1, min(qmax, typed))
+        self._set_inv_qty_value(typed)
+        self._inv_apply_selected_store_request()
+        return True
 
     @staticmethod
     def _inv_station_order() -> List[str]:
@@ -1571,6 +1829,7 @@ class SmsFormat(FormatBase):
 
         def _draw_qty_keypad() -> None:
             font = get_font(12)
+            now_ms = int(pygame.time.get_ticks())
             key_labels: Dict[str, str] = {
                 "A4": "1", "B4": "2", "C4": "3",
                 "A5": "4", "B5": "5", "C5": "6",
@@ -1578,15 +1837,35 @@ class SmsFormat(FormatBase):
                 "B7": "0", "C7": "BACK",
             }
             for cell_name, text in key_labels.items():
-                _draw_cell_text(_cell_rect(cell_name), text, add_empty_lines=False, text_color=cyan)
+                render_button(
+                    surface,
+                    _cell_rect(cell_name),
+                    ButtonState(
+                        button_id=f"SMS_QTY_KEYPAD_{cell_name}",
+                        button_type=ButtonType.MOMENTARY_SINGLE,
+                        text=text,
+                        font_size=12,
+                        flash_until_ms=1 if self._local_flash_active(f"QTY_KEYPAD_{cell_name}", now_ms) else 0,
+                    ),
+                    get_font,
+                    now_ms,
+                )
             # A7 INC up-triangle
             a7 = _cell_rect("A7")
             up_pts = [(a7.centerx, a7.centery - 12), (a7.centerx - 10, a7.centery + 8), (a7.centerx + 10, a7.centery + 8)]
-            pygame.draw.polygon(surface, cyan, up_pts, 0)
+            if self._local_flash_active("QTY_KEYPAD_A7", now_ms):
+                pygame.draw.rect(surface, white, a7.inflate(-max(4, a7.width // 3), -max(4, a7.height // 3)), 0)
+                pygame.draw.polygon(surface, (0, 0, 0), up_pts, 0)
+            else:
+                pygame.draw.polygon(surface, cyan, up_pts, 0)
             # A8 DEC down-triangle
             a8 = _cell_rect("A8")
             dn_pts = [(a8.centerx, a8.centery + 12), (a8.centerx - 10, a8.centery - 8), (a8.centerx + 10, a8.centery - 8)]
-            pygame.draw.polygon(surface, cyan, dn_pts, 0)
+            if self._local_flash_active("QTY_KEYPAD_A8", now_ms):
+                pygame.draw.rect(surface, white, a8.inflate(-max(4, a8.width // 3), -max(4, a8.height // 3)), 0)
+                pygame.draw.polygon(surface, (0, 0, 0), dn_pts, 0)
+            else:
+                pygame.draw.polygon(surface, cyan, dn_pts, 0)
 
         # Standard popup grid.
         for col in range(6):
@@ -1626,7 +1905,8 @@ class SmsFormat(FormatBase):
         if not load_submenu:
             for station, box, label in self._inv_station_button_rects(grid):
                 is_selected = station in selected
-                _draw_cell_text(box, label, add_empty_lines=True, text_color=(white if is_selected else cyan), selected=is_selected)
+                display_label = self._sms_inv_station_label(station)
+                _draw_cell_text(box, display_label, add_empty_lines=False, text_color=(white if is_selected else cyan), selected=is_selected)
             # Keep B/C8 merged border visual.
             bc8 = _cell_rect("B8").union(_cell_rect("C8"))
             seam_x = _cell_rect("B8").right
@@ -1832,10 +2112,14 @@ class SmsFormat(FormatBase):
                 max(0, min(255, int(raw_color[1]))),
                 max(0, min(255, int(raw_color[2]))),
             )
-        key = (str(filename), color_key)
+        icon_path = SmsFormat._resolve_store_icon_path(str(filename))
+        if icon_path is None:
+            key = (str(filename), color_key)
+            SmsFormat._cached_store_icons[key] = None
+            return None
+        key = (str(icon_path), color_key)
         if key in SmsFormat._cached_store_icons:
             return SmsFormat._cached_store_icons[key]
-        icon_path = resource_path("icons", "SMS", "STORES", str(filename))
         try:
             loaded = pygame.image.load(str(icon_path)).convert_alpha()
             if color_key is not None:
@@ -1844,6 +2128,82 @@ class SmsFormat(FormatBase):
         except Exception:
             SmsFormat._cached_store_icons[key] = None
         return SmsFormat._cached_store_icons[key]
+
+    @staticmethod
+    def _store_icon_for_entry(entry: Dict[str, Any]) -> str:
+        icon_name = str(entry.get("icon", "")).strip()
+        if icon_name != "" and SmsFormat._inv_store_icon_exists(icon_name):
+            return icon_name
+        weapon = str(entry.get("weapon", "")).strip()
+        if weapon == "" or weapon.upper() == "NONE":
+            return ""
+        _store_id, derived_icon, _store_type = SmsFormat._inv_store_load_metadata(weapon)
+        return str(derived_icon).strip()
+
+    @staticmethod
+    def _station_icon_faces_left(station: str) -> bool:
+        return str(station).upper().strip() in {"STA1", "STA2", "STA3", "STA4", "STA5"}
+
+    @staticmethod
+    def _sms_store_weapon_short(value: object) -> str:
+        token = SmsFormat._inv_norm_token(value)
+        if token.startswith("AIM120"):
+            suffix = token[6:] if len(token) > 6 else ""
+            return f"A120{suffix}"
+        if token.startswith("AIM9"):
+            return token.replace("AIM", "A", 1)
+        if token.startswith("AIM"):
+            return token.replace("AIM", "A", 1)
+        if token.startswith("GBU"):
+            body = token[3:]
+            return f"GB{body}C" if body != "" else "GBC"
+        if token.startswith("AGM"):
+            return token.replace("AGM", "A", 1)
+        if token.startswith("CBU"):
+            return token.replace("CBU", "C", 1)
+        return token[:6]
+
+    @staticmethod
+    def _sms_store_rack_short(rack: object, weapon: object) -> str:
+        rack_token = SmsFormat._inv_norm_token(rack)
+        weapon_token = SmsFormat._inv_norm_token(weapon)
+        if rack_token.startswith("BRU"):
+            rack_num = rack_token[3:]
+            wpn_hint = ""
+            if weapon_token.startswith("GBU"):
+                wpn_hint = "G" + weapon_token[3:]
+            elif weapon_token.startswith("AGM"):
+                wpn_hint = "A" + weapon_token[3:]
+            elif weapon_token.startswith("CBU"):
+                wpn_hint = "C" + weapon_token[3:]
+            return f"B{rack_num}{wpn_hint}"[:7]
+        if rack_token.startswith("LAU"):
+            return rack_token[:7]
+        return rack_token[:7]
+
+    @staticmethod
+    def _sms_inv_station_label(station: str) -> str:
+        sta = str(station).upper().strip()
+        store_loads = SmsFormat._active_inv_store_loads()
+        entry = store_loads.get(sta, {})
+        if not isinstance(entry, dict):
+            return sta
+        weapon = str(entry.get("weapon", "")).strip()
+        if weapon == "" or weapon.upper() == "NONE":
+            return sta
+        rack = str(entry.get("rack", "")).strip()
+        try:
+            qty = max(1, int(entry.get("qty", 1)))
+        except Exception:
+            qty = 1
+        rack_line = SmsFormat._sms_store_rack_short(rack, weapon)
+        wpn_line = f"{qty}{SmsFormat._sms_store_weapon_short(weapon)}"
+        lines = [sta]
+        if rack_line != "":
+            lines.append(rack_line)
+        if wpn_line != "":
+            lines.append(wpn_line)
+        return "\n".join(lines)
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         self._set_popup_anchor_portal_index(getattr(context, "portal_index", None))
@@ -1923,7 +2283,7 @@ class SmsFormat(FormatBase):
                 if not isinstance(entry, dict):
                     continue
                 weapon = str(entry.get("weapon", "")).strip()
-                icon_name = str(entry.get("icon", "")).strip()
+                icon_name = self._store_icon_for_entry(entry)
                 if weapon == "" or weapon.upper() == "NONE":
                     continue
                 station_loaded.add(sta)
@@ -1988,6 +2348,9 @@ class SmsFormat(FormatBase):
                     right_cx = left_cx + 1
                 sta4_cx: Optional[int] = None
                 sta4_gun_ref_top_y: Optional[int] = None
+                bottom_icon_center_by_station: Dict[str, int] = {}
+                bottom_label_center_x_by_station: Dict[str, int] = {}
+                bottom_outer_label_y_by_station: Dict[str, int] = {}
 
                 for i, sta in enumerate(station_order):
                     if slot_count <= 1:
@@ -2004,15 +2367,14 @@ class SmsFormat(FormatBase):
                         sta4_cx = cx
                         sta4_gun_ref_top_y = y_icon + station_y_offset
                     sta_num = sta.replace("STA", "").strip()
-                    if sta not in station_loaded:
-                        continue
                     icon_name = station_icons.get(sta)
-                    # Top STA number is shown only when a store is loaded on the station.
-                    num_surf = number_font.render(sta_num, True, green)
-                    num_rect = num_surf.get_rect(centerx=cx, y=y_num + station_y_offset)
-                    surface.blit(num_surf, num_rect)
+                    if sta in station_loaded:
+                        # Top STA number is shown only when a store is loaded on the station.
+                        num_surf = number_font.render(sta_num, True, green)
+                        num_rect = num_surf.get_rect(centerx=cx, y=y_num + station_y_offset)
+                        surface.blit(num_surf, num_rect)
                     icon_y = y_icon + station_y_offset
-                    if icon_name:
+                    if sta in station_loaded and icon_name:
                         icon_img = self._get_store_icon_image(icon_name, green_tint=True, tint_color=display_icon_tint)
                         if icon_img is not None:
                             src_w, src_h = icon_img.get_size()
@@ -2021,11 +2383,14 @@ class SmsFormat(FormatBase):
                                 draw_icon_w = max(1, int(round(src_w * fit_scale)))
                                 draw_icon_h = max(1, int(round(src_h * fit_scale)))
                                 scaled_icon = pygame.transform.smoothscale(icon_img, (draw_icon_w, draw_icon_h))
+                                if self._station_icon_faces_left(sta):
+                                    scaled_icon = pygame.transform.flip(scaled_icon, True, False)
                                 icon_x = cx - draw_icon_w // 2
                                 icon_y = y_icon + max(0, (icon_max_h - draw_icon_h) // 2) + station_y_offset
                                 surface.blit(scaled_icon, (icon_x, icon_y))
 
-                    # Draw STORE FB beneath loaded stations at the same X.
+                    # Draw STORE FB beneath loaded stations at the same X, but
+                    # always render bottom station numbers even when empty.
                     fb_img = self._get_store_icon_image("STORE FB.png", green_tint=True, tint_color=display_icon_tint)
                     if fb_img is not None:
                         fb_w, fb_h = fb_img.get_size()
@@ -2053,6 +2418,7 @@ class SmsFormat(FormatBase):
                                 fb_y += 15
                             if sta in {"STA1", "STA11"}:
                                 fb_y -= 10
+                            fb_y -= 7
                             fb_x_anchor = fb_x
                             fb_y_anchor = fb_y
                             # Door-state coupling for STA5/STA7 FB icons only.
@@ -2081,23 +2447,45 @@ class SmsFormat(FormatBase):
                                 pos_x = int(round(base_center_x + dx - (draw_fb_w / 2.0)))
                                 pos_y = int(round(base_center_y + dy - (draw_fb_h / 2.0)))
                                 fb_positions.append((pos_x, pos_y))
-                                surface.blit(scaled_fb, (pos_x, pos_y))
+                                if sta in station_loaded:
+                                    surface.blit(scaled_fb, (pos_x, pos_y))
                             fb_top_y = min((pos_y for _pos_x, pos_y in fb_positions), default=fb_y)
-                            # STA number above FB icon.
-                            if sta in {"STA5", "STA7"}:
-                                # Keep STA5/STA7 FB labels fixed (no door/icon motion)
-                                # and move them 20px up from their prior position.
-                                fb_num_centerx = fb_x_anchor + draw_fb_w // 2
-                                fb_num_y = int(fb_top_y - 35)
-                            elif sta in {"STA3", "STA9"}:
-                                fb_num_centerx = fb_x + draw_fb_w // 2
-                                fb_num_y = int(fb_top_y - 42)
-                            else:
-                                fb_num_centerx = fb_x + draw_fb_w // 2
-                                fb_num_y = int(fb_top_y - 25)
-                            fb_num_surf = number_font.render(sta_num, True, green)
-                            fb_num_rect = fb_num_surf.get_rect(centerx=fb_num_centerx, y=fb_num_y)
-                            surface.blit(fb_num_surf, fb_num_rect)
+                            bottom_icon_center_by_station[sta] = int(round(fb_top_y + (draw_fb_h / 2.0)))
+                            bottom_label_center_x_by_station[sta] = int(fb_x_anchor + (draw_fb_w // 2))
+                            if sta in {"STA1", "STA2", "STA3", "STA9", "STA10", "STA11"}:
+                                bottom_outer_label_y_by_station[sta] = int((fb_top_y + 7) - 42)
+                outer_left_y = int(bottom_outer_label_y_by_station.get("STA3", y_num))
+                outer_right_y = int(bottom_outer_label_y_by_station.get("STA9", outer_left_y))
+                outer_y = int(round((outer_left_y + outer_right_y) / 2.0))
+                num_half_h = max(1, number_font.get_height() // 2)
+                row_48_center_y = int(round((
+                    bottom_icon_center_by_station.get("STA3", outer_y + num_half_h)
+                    + bottom_icon_center_by_station.get("STA9", outer_y + num_half_h)
+                ) / 2.0))
+                row_57_center_y = int(round((
+                    bottom_icon_center_by_station.get("STA4", row_48_center_y)
+                    + bottom_icon_center_by_station.get("STA8", row_48_center_y)
+                ) / 2.0))
+                row_57_icon_center_y = int(round((
+                    bottom_icon_center_by_station.get("STA5", row_57_center_y)
+                    + bottom_icon_center_by_station.get("STA7", row_57_center_y)
+                ) / 2.0))
+                for sta in station_order:
+                    sta_num = sta.replace("STA", "").strip()
+                    label_x = bottom_label_center_x_by_station.get(sta)
+                    if label_x is None:
+                        continue
+                    num_surf = number_font.render(sta_num, True, green)
+                    if sta in {"STA1", "STA2", "STA3", "STA9", "STA10", "STA11"}:
+                        num_y = outer_y
+                    elif sta in {"STA4", "STA8"}:
+                        num_y = int(row_48_center_y - (num_surf.get_height() // 2) - 10)
+                    elif sta in {"STA5", "STA7"}:
+                        num_y = int(row_57_center_y - (num_surf.get_height() // 2))
+                    else:
+                        continue
+                    num_rect = num_surf.get_rect(centerx=label_x, y=num_y)
+                    surface.blit(num_surf, num_rect)
                 # Draw GUN and GUN FB relative to STA4.
                 if sta4_cx is not None:
                     gun_cx = int(sta4_cx + 12)
@@ -2124,8 +2512,13 @@ class SmsFormat(FormatBase):
                             draw_gun_fb_h = max(1, int(round(gun_fb_h * gun_fb_scale * 0.12)))
                             scaled_gun_fb = pygame.transform.smoothscale(gun_fb_img, (draw_gun_fb_w, draw_gun_fb_h))
                             gun_fb_x = gun_cx - draw_gun_fb_w // 2
-                            gun_fb_y = int(gun_fb_ref_top - draw_gun_fb_h - 29)
+                            gun_fb_y = int(gun_fb_ref_top - draw_gun_fb_h - 29) - 7
                             surface.blit(scaled_gun_fb, (gun_fb_x, gun_fb_y))
+                            sta6_surf = number_font.render("6", True, green)
+                            ref_center_y = int(row_57_icon_center_y)
+                            sta6_num_y = int(ref_center_y - (sta6_surf.get_height() // 2))
+                            sta6_rect = sta6_surf.get_rect(centerx=draw_rect.centerx, y=sta6_num_y)
+                            surface.blit(sta6_surf, sta6_rect)
         else:
             # Subportal SMS: render only top station numbers/icons and GUN icon.
             store_loads = self._active_display_store_loads()
@@ -2137,7 +2530,7 @@ class SmsFormat(FormatBase):
                 if not isinstance(entry, dict):
                     continue
                 weapon = str(entry.get("weapon", "")).strip()
-                icon_name = str(entry.get("icon", "")).strip()
+                icon_name = self._store_icon_for_entry(entry)
                 if weapon == "" or weapon.upper() == "NONE" or icon_name == "":
                     continue
                 station_icons[sta] = icon_name
@@ -2218,6 +2611,8 @@ class SmsFormat(FormatBase):
                     draw_icon_w = max(1, int(round(src_w * fit_scale)))
                     draw_icon_h = max(1, int(round(src_h * fit_scale)))
                     scaled_icon = pygame.transform.smoothscale(icon_img, (draw_icon_w, draw_icon_h))
+                    if self._station_icon_faces_left(sta):
+                        scaled_icon = pygame.transform.flip(scaled_icon, True, False)
                     icon_x = cx - draw_icon_w // 2
                     icon_y = y_icon + max(0, (icon_max_h - draw_icon_h) // 2) + station_y_offset
                     surface.blit(scaled_icon, (icon_x, icon_y))
@@ -2279,11 +2674,11 @@ class SmsFormat(FormatBase):
             if side == "L":
                 if idx < 1 or idx > side_count:
                     return None
-                return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             if side == "R":
                 if idx < 1 or idx > side_count:
                     return None
-                return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             return None
 
         t1_box = _osb_box("T1")
@@ -2350,6 +2745,7 @@ class SmsFormat(FormatBase):
                 )
                 render_button(surface, t3_box, t3_state, get_font, 0)
             if l1_box is not None:
+                _draw_text_only_highlight(l1_box, ["INV", "PROG>"], "left")
                 l1_state = ButtonState(
                     button_id="SMS_CNTL_L1_INV_PROG",
                     button_type=ButtonType.PAGE_ACCESS,
@@ -2364,6 +2760,7 @@ class SmsFormat(FormatBase):
                 render_button(surface, l1_box, l1_state, get_font, 0)
             if l2_box is not None:
                 doors_open = bool(int(SMS_STATE.get("doors_open", 0)))
+                _draw_text_only_highlight(l2_box, ["DOORS", "OPEN", "CLOSED"], "left")
                 l2_state = ButtonState(
                     button_id="SMS_CNTL_L2_DOORS",
                     button_type=ButtonType.DOUBLE_FUNCTION,
@@ -2380,6 +2777,7 @@ class SmsFormat(FormatBase):
                 )
                 render_button(surface, l2_box, l2_state, get_font, 0)
             if l3_box is not None:
+                _draw_text_only_highlight(l3_box, ["EXCM", "PROG>"], "left")
                 l3_state = ButtonState(
                     button_id="SMS_CNTL_L3_EXCM_PROG",
                     button_type=ButtonType.PAGE_ACCESS,
@@ -2393,6 +2791,7 @@ class SmsFormat(FormatBase):
                 )
                 render_button(surface, l3_box, l3_state, get_font, 0)
             if l4_box is not None:
+                _draw_text_only_highlight(l4_box, ["SJ>"], "left")
                 l4_state = ButtonState(
                     button_id="SMS_CNTL_L4_SJ",
                     button_type=ButtonType.PAGE_ACCESS,
@@ -2642,55 +3041,18 @@ class SmsFormat(FormatBase):
             if current_sel == "QNTY":
                 qty = max(0, int(self._inv_qty_value()))
                 qmax = max(0, int(self._inv_qty_max()))
-                key_cells: Dict[str, str] = {
-                    "A4": "1", "B4": "2", "C4": "3",
-                    "A5": "4", "B5": "5", "C5": "6",
-                    "A6": "7", "B6": "8", "C6": "9",
-                    "B7": "0", "C7": "BACK",
-                    "A7": "INC", "A8": "DEC",
-                }
-                for cell, token in key_cells.items():
+                for cell in [
+                    "A4", "B4", "C4",
+                    "A5", "B5", "C5",
+                    "A6", "B6", "C6",
+                    "B7", "C7",
+                    "A7", "A8",
+                ]:
                     if self._inv_cell_rect(grid, cell).collidepoint(pos):
-                        if token == "INC":
-                            if qmax > 0:
-                                new_qty = min(qmax, max(1, qty + 1))
-                                self._set_inv_qty_value(new_qty)
-                                SmsFormat._ui_set("cntl_inv_load_qty_input", str(max(1, min(9, new_qty))))
-                                self._inv_apply_selected_store_request()
-                        elif token == "DEC":
-                            if qmax > 0:
-                                new_qty = max(1, min(qmax, qty - 1))
-                                self._set_inv_qty_value(new_qty)
-                                SmsFormat._ui_set("cntl_inv_load_qty_input", str(max(1, min(9, new_qty))))
-                                self._inv_apply_selected_store_request()
-                        else:
-                            input_txt = str(SmsFormat._ui_get("cntl_inv_load_qty_input", ""))
-                            if token == "BACK":
-                                input_txt = input_txt[:-1]
-                            else:
-                                input_txt = str(token)[:1]
-                            SmsFormat._ui_set("cntl_inv_load_qty_input", input_txt)
-                            try:
-                                typed = int(input_txt) if input_txt != "" else qty
-                            except Exception:
-                                typed = qty
-                            if qmax > 0:
-                                typed = max(1, min(qmax, typed))
-                            self._set_inv_qty_value(typed)
-                            self._inv_apply_selected_store_request()
-                        return True
+                        return self._inv_apply_qty_key_cell(cell, qty, qmax)
                 return True
 
-            if current_sel == "TYPE":
-                opts = list(type_opts)
-            elif current_sel == "RACK":
-                opts = list(rack_opts)
-            elif current_sel == "WPN":
-                opts = list(wpn_opts)
-            elif current_sel == "FUZE":
-                opts = list(fuze_mode_opts if self._cntl_inv_load_fuze_mode_open() else fuze_opts)
-            else:
-                opts = []
+            opts = self._inv_load_options_for_selection(current_sel, type_opts, rack_opts, wpn_opts, fuze_opts, fuze_mode_opts)
             pages = self._inv_option_pages(opts, page_size=12)
             a8 = self._inv_cell_rect(grid, "A8")
             if a8.collidepoint(pos) and len(pages) > 1:
@@ -2710,69 +3072,15 @@ class SmsFormat(FormatBase):
             ]
             for idx, cell in enumerate(opt_cells):
                 if self._inv_cell_rect(grid, cell).collidepoint(pos):
-                    if idx < len(active):
-                        chosen = str(active[idx]).upper().strip()
-                        if current_sel == "TYPE":
-                            self._set_cntl_inv_load_type_value(chosen)
-                            self._set_inv_rack_value("")
-                            self._set_inv_wpn_value("")
-                            self._set_inv_fuze_value("")
-                            self._set_inv_fuze_mode_value("")
-                            self._set_cntl_inv_load_fuze_mode_open(False)
-                            self._set_inv_qty_value(0)
-                            self._set_inv_qty_max(0)
-                            # Auto-advance to RACK and keep options open.
-                            self._set_cntl_inv_load_selected_field("RACK")
-                            self._set_cntl_inv_load_type_menu_open(True)
-                            self._set_cntl_inv_load_type_page(0)
-                        elif current_sel == "RACK":
-                            self._set_inv_rack_value(chosen)
-                            self._set_inv_wpn_value("")
-                            self._set_inv_fuze_value("")
-                            self._set_inv_fuze_mode_value("")
-                            self._set_cntl_inv_load_fuze_mode_open(False)
-                            self._set_inv_qty_value(0)
-                            self._set_inv_qty_max(0)
-                            # Auto-advance to WPN and keep options open.
-                            self._set_cntl_inv_load_selected_field("WPN")
-                            self._set_cntl_inv_load_type_menu_open(True)
-                            self._set_cntl_inv_load_type_page(0)
-                        elif current_sel == "WPN":
-                            self._set_inv_wpn_value(chosen)
-                            self._set_inv_fuze_value("")
-                            self._set_inv_fuze_mode_value("")
-                            self._set_cntl_inv_load_fuze_mode_open(False)
-                            # Default QNTY to max for the chosen weapon.
-                            _t, _r, _w, _f, _fm, qmax_now, _q = self._sync_inv_load_selection_state()
-                            if qmax_now > 0:
-                                self._set_inv_qty_value(qmax_now)
-                            self._inv_apply_selected_store_request()
-                            if self._inv_is_gbu_wpn(chosen):
-                                self._set_cntl_inv_load_selected_field("FUZE")
-                                self._set_cntl_inv_load_type_menu_open(True)
-                                self._set_cntl_inv_load_type_page(0)
-                                self._set_cntl_inv_load_fuze_mode_open(False)
-                            else:
-                                self._set_cntl_inv_load_type_menu_open(False)
-                        elif current_sel == "FUZE":
-                            if self._cntl_inv_load_fuze_mode_open():
-                                self._set_inv_fuze_mode_value(chosen)
-                                self._inv_apply_selected_store_request()
-                                self._set_cntl_inv_load_fuze_mode_open(False)
-                                self._set_cntl_inv_load_type_menu_open(False)
-                            else:
-                                self._set_inv_fuze_value(chosen)
-                                self._set_inv_fuze_mode_value("")
-                                next_modes = self._inv_available_fuze_modes(self._inv_wpn_value(), chosen)
-                                if len(next_modes) > 0:
-                                    self._set_cntl_inv_load_fuze_mode_open(True)
-                                    self._set_cntl_inv_load_type_menu_open(True)
-                                    self._set_cntl_inv_load_type_page(0)
-                                else:
-                                    self._inv_apply_selected_store_request()
-                                    self._set_cntl_inv_load_fuze_mode_open(False)
-                                    self._set_cntl_inv_load_type_menu_open(False)
-                    return True
+                    return self._inv_select_load_option_cell(
+                        cell,
+                        current_sel,
+                        type_opts,
+                        rack_opts,
+                        wpn_opts,
+                        fuze_opts,
+                        fuze_mode_opts,
+                    )
         return True
 
     def on_osb(self, label: str, context: FormatContext) -> bool:
@@ -2784,6 +3092,37 @@ class SmsFormat(FormatBase):
 
         if self._cntl_submenu_open():
             if self._cntl_inv_prog_open():
+                if not self._cntl_inv_load_open():
+                    station = self._inv_station_for_edge_osb(token)
+                    if station != "":
+                        self._inv_toggle_station_selection(station)
+                        self._sync_inv_load_selection_state()
+                        return True
+                    if token in {"R6", "R7"} and self._inv_selected_has_loaded_store():
+                        self._inv_clear_selected_stores()
+                        return True
+                    if token in {"R5", "R6", "R7"} and len(self._inv_selected_stations()) > 0:
+                        self._set_cntl_inv_load_open(True)
+                        self._sync_inv_load_selection_state()
+                        return True
+                if self._cntl_inv_load_open() and self._cntl_inv_load_type_menu_open():
+                    type_opts, rack_opts, wpn_opts, fuze_opts, fuze_mode_opts, _qty_max, _qty_value = self._sync_inv_load_selection_state()
+                    current_sel = self._cntl_inv_load_selected_field()
+                    edge_cell = self._inv_load_edge_cell_for_osb(token)
+                    if edge_cell != "" and current_sel == "QNTY":
+                        qty = max(0, int(self._inv_qty_value()))
+                        qmax = max(0, int(self._inv_qty_max()))
+                        return self._inv_apply_qty_key_cell(edge_cell, qty, qmax)
+                    if edge_cell != "" and current_sel in {"TYPE", "RACK", "WPN", "FUZE"}:
+                        return self._inv_select_load_option_cell(
+                            edge_cell,
+                            current_sel,
+                            type_opts,
+                            rack_opts,
+                            wpn_opts,
+                            fuze_opts,
+                            fuze_mode_opts,
+                        )
                 if token in {"R3", "R4", "R5", "R6", "R7"} and self._cntl_inv_load_open():
                     self._sync_inv_load_selection_state()
                     if not self._inv_is_gbu_wpn(self._inv_wpn_value()):
@@ -2794,6 +3133,18 @@ class SmsFormat(FormatBase):
                         self._set_cntl_inv_load_fuze_mode_open(False)
                     else:
                         self._set_cntl_inv_load_selected_field("FUZE")
+                        self._set_cntl_inv_load_type_menu_open(True)
+                        self._set_cntl_inv_load_type_page(0)
+                        self._set_cntl_inv_load_fuze_mode_open(False)
+                    return True
+                if token in {"T5", "R1", "R2"} and self._cntl_inv_load_open():
+                    self._sync_inv_load_selection_state()
+                    if self._cntl_inv_load_selected_field() == "TYPE":
+                        self._set_cntl_inv_load_selected_field("")
+                        self._set_cntl_inv_load_type_menu_open(False)
+                        self._set_cntl_inv_load_fuze_mode_open(False)
+                    else:
+                        self._set_cntl_inv_load_selected_field("TYPE")
                         self._set_cntl_inv_load_type_menu_open(True)
                         self._set_cntl_inv_load_type_page(0)
                         self._set_cntl_inv_load_fuze_mode_open(False)
@@ -2853,6 +3204,14 @@ class SmsFormat(FormatBase):
         if token in {"R3", "R4"}:
             return True
         return False
+
+    def defer_osb_to_grid_click(self, label: str) -> bool:
+        if not (self._cntl_submenu_open() and self._cntl_inv_prog_open()):
+            return False
+        token = str(label).upper().strip()
+        # T1 remains the page/back OSB. Every other overlapping zone belongs to
+        # the rendered INV grid, so let on_click use exact grid cell bounds.
+        return token != "T1"
 
     def osb_is_interactive(self, label: str) -> bool:
         token = str(label).upper().strip()

@@ -66,11 +66,11 @@ class Das3DFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     @staticmethod
@@ -152,12 +152,12 @@ class Das3DFormat(FormatBase):
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     @staticmethod
     def _gol_popup_rows(rect: pygame.Rect) -> Tuple[int, int]:
         is_5x7 = rect.height >= int(7 * DPI) - 1
-        row_start = 3 if is_5x7 else 2
+        row_start = 3
         return row_start, row_start + 3
 
     def _gol_popup_rect(self, rect: pygame.Rect) -> pygame.Rect:
@@ -475,8 +475,6 @@ class Das3DFormat(FormatBase):
                     button_id="DAS_R2",
                     button_type=ButtonType.MOMENTARY_SINGLE,
                     text="WHOT" if whot_enabled else "BHOT",
-                    is_single_function=True,
-                    is_on=bool(whot_enabled),
                     h_align="right",
                     v_align="center",
                     padding=OSB_PADDING,

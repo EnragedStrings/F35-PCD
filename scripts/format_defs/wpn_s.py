@@ -47,18 +47,18 @@ class WpnSFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def _data_entry_grid_rect(self, rect: pygame.Rect) -> pygame.Rect:
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     def _format_field_value(self, label: str) -> str:
         meta = self._field_meta.get(label, {})
@@ -142,12 +142,21 @@ class WpnSFormat(FormatBase):
             "B6": ".",
             "C6": "0", "D6": "BACK",
         }
-        font = get_font(16)
+        now_ms = int(pygame.time.get_ticks())
         for cell_name, text in keypad.items():
             box = cell_rect(cell_name)
-            s = font.render(text, True, (0, 255, 255))
-            s_rect = s.get_rect(center=box.center)
-            surface.blit(s, s_rect)
+            render_button(
+                surface,
+                box,
+                ButtonState(
+                    button_id=f"WPNS_KEYPAD_{cell_name}",
+                    button_type=ButtonType.MOMENTARY_SINGLE,
+                    text=text,
+                    flash_until_ms=1 if self._local_flash_active(f"KEYPAD_{cell_name}", now_ms) else 0,
+                ),
+                get_font,
+                now_ms,
+            )
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         prev_clip = surface.get_clip()
@@ -283,6 +292,7 @@ class WpnSFormat(FormatBase):
         key = keypad.get(cell)
         if key is None:
             return True
+        self._trigger_local_flash(f"KEYPAD_{cell}")
         self._apply_data_key(selected, key)
         return True
 

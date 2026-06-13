@@ -96,7 +96,13 @@ class AdsbWorkerRuntime:
             # reference to the original dict. Keep those references live instead
             # of replacing the object in only the formats module.
             for module in list(sys.modules.values()):
-                state = getattr(module, "TSD_ADSB_STATE", None)
+                try:
+                    module_vars = vars(module)
+                except Exception:
+                    continue
+                # Avoid getattr(): some third-party modules implement lazy
+                # __getattr__ imports, which can stall the main loop.
+                state = module_vars.get("TSD_ADSB_STATE")
                 if isinstance(state, dict) and state is not existing:
                     state.clear()
                     state.update(snapshot)

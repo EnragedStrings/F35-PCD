@@ -49,16 +49,16 @@ class DimFormat(FormatBase):
             return pygame.Rect(rect.x + (idx - 1) * GRID_CELL_W, rect.y, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "L":
             if idx == 7:
-                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.x, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx == 7:
-                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+                return pygame.Rect(rect.right - GRID_CELL_W, rect.bottom - DISPLAY_OSB_H - SIDE_OSB_Y_SHIFT, GRID_CELL_W, DISPLAY_OSB_H)
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     def _entry_count(self) -> int:
@@ -1167,7 +1167,7 @@ class DimV2Format(DimFormat):
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     def _popup_rect(self, rect: pygame.Rect) -> pygame.Rect:
         grid = self._grid_rect(rect)
@@ -1851,6 +1851,7 @@ class DimV2Format(DimFormat):
             y = popup.top + (r * GRID_CELL_H)
             pygame.draw.line(surface, cyan, (popup.left, y), (popup.right, y), 1)
         font = get_font(13)
+        now_ms = int(pygame.time.get_ticks())
         for row in range(2, 7):
             for col in range(1, 4):
                 cell = f"{chr(ord('A') + col)}{row}"
@@ -1858,6 +1859,7 @@ class DimV2Format(DimFormat):
                 box = pygame.Rect(grid.x + (col * GRID_CELL_W), grid.y + ((row - 1) * GRID_CELL_H), GRID_CELL_W, GRID_CELL_H)
                 if label == "":
                     continue
+                flashing = bool(self._local_flash_active(f"KEYPAD_{cell}", now_ms))
                 if label in {"LEFT", "RIGHT"}:
                     tri_w = max(10, box.width // 3)
                     tri_h = max(8, box.height // 3)
@@ -1868,22 +1870,28 @@ class DimV2Format(DimFormat):
                     else:
                         cx = box.centerx + max(4, box.width // 10)
                         pts = [(cx + tri_w // 2, cy), (cx - tri_w // 2, cy - tri_h // 2), (cx - tri_w // 2, cy + tri_h // 2)]
-                    pygame.draw.polygon(surface, cyan, pts, 0)
+                    if flashing:
+                        pygame.draw.rect(surface, (255, 255, 255), box.inflate(-max(4, box.width // 3), -max(4, box.height // 3)), 0)
+                    pygame.draw.polygon(surface, (0, 0, 0) if flashing else cyan, pts, 0)
                     continue
                 alpha_part = "".join(ch for ch in label if ch.isalpha())
                 digit_part = "".join(ch for ch in label if ch.isdigit())
                 if alpha_part != "" and digit_part != "":
-                    top = font.render(alpha_part, True, cyan)
-                    bot = font.render(digit_part, True, cyan)
+                    top = font.render(alpha_part, True, (0, 0, 0) if flashing else cyan)
+                    bot = font.render(digit_part, True, (0, 0, 0) if flashing else cyan)
                     total_h = top.get_height() + 1 + bot.get_height()
                     ty = box.centery - total_h // 2
                     tr = top.get_rect(centerx=box.centerx, y=ty)
                     br = bot.get_rect(centerx=box.centerx, y=tr.bottom + 1)
+                    if flashing:
+                        pygame.draw.rect(surface, (255, 255, 255), tr.union(br).inflate(6, 3), 0)
                     surface.blit(top, tr)
                     surface.blit(bot, br)
                 else:
-                    surf = font.render(label, True, cyan)
+                    surf = font.render(label, True, (0, 0, 0) if flashing else cyan)
                     rr = surf.get_rect(center=box.center)
+                    if flashing:
+                        pygame.draw.rect(surface, (255, 255, 255), rr.inflate(6, 3), 0)
                     surface.blit(surf, rr)
         surface.set_clip(prev_clip)
 
@@ -2257,6 +2265,7 @@ class DimV2Format(DimFormat):
         cell = f"{chr(ord('A') + col)}{row + 1}"
         tok = str(self._keypad_map().get(cell, ""))
         if tok != "":
+            self._trigger_local_flash(f"KEYPAD_{cell}")
             self._keypad_apply(cell, tok)
         return True
 

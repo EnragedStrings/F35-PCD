@@ -484,6 +484,16 @@ class CommFormat(FormatBase):
             (3, "C", "comc", "comc_freq", bool(state.get("comc_on", True)), _safe_int(state.get("preset_c"), None)),
             (5, "D", "comd", "comd_freq", bool(state.get("comd_on", True)), _safe_int(state.get("preset_d"), None)),
         ]
+        de_line_font = get_font(15)
+        de_line2_anchor_w = 0
+        for _, radio, field, freq_key, _, _ in de_rows:
+            freq_value = str(state.get(freq_key, "000.000"))
+            preset_number = _comm_preset_number_for_freq(state, field, freq_value)
+            left_lbl, mid_lbl, right_lbl = _comm_row_label_parts(state, field, freq_value, preset_number)
+            line3_suffix = _comm_compose_row_label(left_lbl, mid_lbl, right_lbl)
+            line3_main = f"COM {radio}"
+            line3_text = line3_main if line3_suffix == "" else f"{line3_main} {line3_suffix}"
+            de_line2_anchor_w = max(de_line2_anchor_w, de_line_font.size(line3_text)[0])
         for row_num, radio, field, freq_key, on, preset in de_rows:
             m = merged_de(row_num)
             row_key = f"DE{row_num}"
@@ -507,9 +517,7 @@ class CommFormat(FormatBase):
             line3_suffix = _comm_compose_row_label(left_lbl, mid_lbl, right_lbl)
             line3_main = f"COM {radio}"
             line3_text = line3_main if line3_suffix == "" else f"{line3_main} {line3_suffix}"
-            line3_font = get_font(15)
-            line3_text_w = line3_font.size(line3_text)[0]
-            line2_x_pad = max(0, (m.width - line3_text_w) // 2)
+            line2_x_pad = max(0, (m.width - de_line2_anchor_w) // 2)
             if selected == field and (not row_disabled):
                 top = freq_scratch(str(state.get(f"{field}_input", "")))
                 draw_line_bottom(m, 1, top, white, size=15, box_selected=True, flash_key=row_key)
@@ -624,7 +632,7 @@ class CommFormat(FormatBase):
         draw_line(e8, 1, "COM", cyan, size=15, align="left", x_pad=6, flash_key="E8")
         draw_line(e8, 2, "SETUP>", cyan, size=15, align="left", x_pad=6, flash_key="E8")
 
-        if gol_menu in {"D4", "D7", "E7", "C8", "D8"}:
+        if gol_menu in {"D4", "D7", "E7"}:
             _draw_comm_gol_popup(gol_menu)
 
         # Numeric keypad stays available while COMM GOLs are open.

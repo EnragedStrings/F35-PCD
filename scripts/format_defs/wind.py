@@ -334,8 +334,9 @@ class WindFormat(FormatBase):
         draw_line_bottom(e2, 2, "LOCAL", white if local_selected else cyan, box_selected=local_selected)
         draw_line_bottom(e2, 3, "ZULU", white if zulu_selected else cyan, box_selected=zulu_selected)
 
-        draw_line_bottom(de3, 2, "STOPWATCH", gray)
-        draw_line_bottom(de3, 3, stopwatch_text, gray)
+        stopwatch_color = green if _wind_stopwatch_is_visible() else gray
+        draw_line_bottom(de3, 2, "STOPWATCH", stopwatch_color)
+        draw_line_bottom(de3, 3, stopwatch_text, stopwatch_color)
 
         draw_line_bottom(e4, 2, "START", cyan, flash_key="E4")
         draw_line_bottom(e5, 2, "STOP", cyan, flash_key="E5")
@@ -356,12 +357,19 @@ class WindFormat(FormatBase):
             "C7": "BACK",
         }
         font = get_font(16)
+        flash_until = state.get("flash_until", {})
+        if not isinstance(flash_until, dict):
+            flash_until = {}
+        now_ms = int(pygame.time.get_ticks())
         for cell_name, text in keypad_labels.items():
             if text == "":
                 continue
             box = self._cell_rect(rect, cell_name)
-            surf = font.render(text, True, cyan)
+            flashing = int(flash_until.get(f"KP_{cell_name}", 0) or 0) > now_ms
+            surf = font.render(text, True, (0, 0, 0) if flashing else cyan)
             srect = surf.get_rect(center=box.center)
+            if flashing:
+                pygame.draw.rect(surface, white, srect.inflate(6, 3), 0)
             surface.blit(surf, srect)
 
     def on_click(self, pos: Tuple[int, int], rect: pygame.Rect, context: FormatContext) -> bool:
@@ -387,6 +395,7 @@ class WindFormat(FormatBase):
         }
 
         if cell in keypad_map:
+            self._trigger_flash(f"KP_{cell}")
             self._apply_keypad_token(keypad_map[cell])
             return True
 
@@ -426,8 +435,8 @@ class WindFormat(FormatBase):
         if cell == "D5":
             self._trigger_flash("D5")
             state["stopwatch_elapsed_s"] = 0.0
-            if bool(state.get("stopwatch_running", False)):
-                state["stopwatch_anchor_mono"] = float(time.monotonic())
+            state["stopwatch_running"] = False
+            state["stopwatch_anchor_mono"] = float(time.monotonic())
             return True
         if cell == "B2":
             # Reserved GOL behavior.

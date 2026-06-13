@@ -625,23 +625,70 @@ class FuelFormat(FormatBase):
         return rect
 
     def get_osb_rect(self, rect: pygame.Rect) -> pygame.Rect:
-        # Keep OSBs at full portal size; only center/resize tanks and related text.
+        # Keep FUEL side OSBs available down into the subportal row in 5x5/10x5.
+        if rect.height < int(7 * DPI) - 1:
+            return pygame.Rect(rect.x, rect.y, rect.width, int(7 * DPI))
         return rect
+
+    def _fuel_osb_box(self, rect: pygame.Rect, label: str) -> pygame.Rect:
+        txt = str(label).upper().strip()
+        top_count = 5 if rect.width < int(10 * DPI) else 10
+        side_count = 6 if rect.height >= int(7 * DPI) - 1 else 5
+        top_h = DISPLAY_OSB_H
+        side_h = DISPLAY_OSB_H
+        one_in_h = int(1.0 * DPI)
+        if txt.startswith("T"):
+            try:
+                idx = int(txt[1:])
+            except Exception:
+                idx = 1
+            idx = max(1, min(top_count, idx))
+            return pygame.Rect(rect.x + (idx - 1) * GRID_CELL_W, rect.y, GRID_CELL_W, top_h)
+        if txt.startswith("L") or txt.startswith("R"):
+            try:
+                idx = int(txt[1:])
+            except Exception:
+                idx = 1
+            idx = max(1, min(side_count, idx))
+            x = rect.x if txt.startswith("L") else rect.right - GRID_CELL_W
+            h = one_in_h if txt in {"L2", "L6", "R6"} else side_h
+            if txt in {"L6", "R6"}:
+                y = rect.y + int(5.0 * DPI)
+            elif txt in {"L5", "R5"}:
+                y = rect.y + int(5.0 * DPI) - side_h
+            else:
+                y = rect.y + top_h - SIDE_OSB_Y_SHIFT + (idx - 1) * side_h
+            return pygame.Rect(x, y, GRID_CELL_W, h)
+        return pygame.Rect(rect.x, rect.y, GRID_CELL_W, top_h)
+
+    def adjust_osb_zones(self, zones: List[object], rect: pygame.Rect, visible_rect: Optional[pygame.Rect] = None) -> List[object]:
+        show_bottom_side_osbs = visible_rect is None or visible_rect.height >= int(7 * DPI) - 1
+        if not show_bottom_side_osbs:
+            zones = [zone for zone in zones if str(getattr(zone, "label", "")).upper() not in {"L6", "R6"}]
+        for zone in zones:
+            label = str(getattr(zone, "label", "")).upper()
+            if label in {"L2", "L5", "L6", "R5", "R6"}:
+                try:
+                    zone.rect = self._fuel_osb_box(rect, label)
+                except Exception:
+                    pass
+        return zones
 
     def _data_entry_grid_rect(self, rect: pygame.Rect) -> pygame.Rect:
         # Keep popup keypad on a fixed 5x8 grid centered horizontally for wide portals.
         grid_w = 5 * GRID_CELL_W
         grid_h = 8 * GRID_CELL_H
         grid_x = _anchored_5col_grid_x(rect, grid_w)
-        return pygame.Rect(grid_x, rect.y, grid_w, grid_h)
+        return pygame.Rect(grid_x, rect.y - SIDE_OSB_Y_SHIFT, grid_w, grid_h)
 
     @staticmethod
     def _data_entry_row_start(rect: pygame.Rect) -> int:
         # 5x7 / 10x7 uses rows 3..6; 5x5 / 10x5 uses rows 2..5.
-        return 3 if rect.height >= int(7 * DPI) - 1 else 2
+        return 3
 
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         prev_clip = surface.get_clip()
+        osb_rect = self.get_osb_rect(rect)
         surface.set_clip(rect)
         color = parse_hex_color("00FFFF")
         primary_rect = self._primary_display_rect(rect)
@@ -649,9 +696,12 @@ class FuelFormat(FormatBase):
         if is_primary:
             self._draw_primary_tanks(surface, primary_rect)
             # Keep OSB labels/buttons at full portal geometry in 10x5/10x7.
-            self._draw_osb_labels(surface, rect, context)
+            surface.set_clip(osb_rect)
+            self._draw_osb_labels(surface, osb_rect, context)
             # Keep keypad popup centered to the full portal.
+            surface.set_clip(rect)
             self._draw_data_entry_popup(surface, rect)
+            surface.set_clip(osb_rect)
             self._draw_hazard_confirm_popup(surface, rect)
         else:
             sub_rect = rect.inflate(-6, -6)
@@ -781,12 +831,21 @@ class FuelFormat(FormatBase):
             f"B{row_start + 3}": ".",
             f"C{row_start + 3}": "0", f"D{row_start + 3}": "BACK",
         }
-        font = get_font(16)
+        now_ms = int(pygame.time.get_ticks())
         for cell_name, text in keypad.items():
             box = cell_rect(cell_name)
-            s = font.render(text, True, (0, 255, 255))
-            s_rect = s.get_rect(center=box.center)
-            surface.blit(s, s_rect)
+            render_button(
+                surface,
+                box,
+                ButtonState(
+                    button_id=f"FUEL_KEYPAD_{cell_name}",
+                    button_type=ButtonType.MOMENTARY_SINGLE,
+                    text=text,
+                    flash_until_ms=1 if self._local_flash_active(f"KEYPAD_{cell_name}", now_ms) else 0,
+                ),
+                get_font,
+                now_ms,
+            )
 
     def on_click(self, pos: Tuple[int, int], rect: pygame.Rect, context: FormatContext) -> bool:
         self._set_popup_anchor_portal_index(getattr(context, "portal_index", None))
@@ -827,6 +886,7 @@ class FuelFormat(FormatBase):
         key = keypad.get(cell)
         if key is None:
             return True
+        self._trigger_local_flash(f"KEYPAD_{cell}")
         selected = self._data_selected()
         if selected is None:
             return True
@@ -861,7 +921,7 @@ class FuelFormat(FormatBase):
         self._apply_data_key(selected, normalized)
         return True
 
-    def _draw_osb_labels(self, surface, rect: pygame.Rect, context: FormatContext) -> None:
+    def _draw_osb_labels(self, surface, rect: pygame.Rect, context: FormatContext, only_labels: Optional[Set[str]] = None) -> None:
         color = parse_hex_color("00FFFF")
         top_labels = {1: "", 2: "REFUEL", 3: "", 4: "PRE\\nCONTACT"}
         right_labels = {
@@ -975,6 +1035,7 @@ class FuelFormat(FormatBase):
 
         top_count = 5 if rect.width < int(10 * DPI) else 10
         side_count = 6 if rect.height >= int(7 * DPI) - 1 else 5
+        show_bottom_side_osbs = rect.height >= int(7 * DPI) - 1
         top_offset = DISPLAY_OSB_H if top_count > 0 else 0
         airborne = self._is_airborne()
         if not airborne:
@@ -987,16 +1048,26 @@ class FuelFormat(FormatBase):
         for idx, text in top_labels.items():
             if idx > top_count:
                 continue
-            box = pygame.Rect(rect.x + (idx - 1) * GRID_CELL_W, rect.y, GRID_CELL_W, DISPLAY_OSB_H)
             osb_label = f"T{idx}"
+            if only_labels is not None and osb_label not in only_labels:
+                continue
+            box = self._fuel_osb_box(rect, osb_label)
+            if osb_label in {"L6", "R6"}:
+                surface.fill((0, 0, 0), box)
             flashing = context.is_osb_flashing(osb_label)
             draw_label(box, text, "top", flashing, single_on=(osb_label == "T2" and bool(FuelFormat._shared_refuel_t2_on)))
 
         for idx, text in left_labels.items():
             if idx > side_count:
                 continue
-            box = pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             osb_label = f"L{idx}"
+            if osb_label == "L6" and not show_bottom_side_osbs:
+                continue
+            if only_labels is not None and osb_label not in only_labels:
+                continue
+            box = self._fuel_osb_box(rect, osb_label)
+            if osb_label in {"L6", "R6"}:
+                surface.fill((0, 0, 0), box)
             flashing = context.is_osb_flashing(osb_label)
             if osb_label == "L3":
                 draw_label_lines_2_3(box, text, "left", flashing)
@@ -1042,8 +1113,12 @@ class FuelFormat(FormatBase):
         for idx, text in right_labels.items():
             if idx > side_count:
                 continue
-            box = pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
             osb_label = f"R{idx}"
+            if osb_label == "R6" and not show_bottom_side_osbs:
+                continue
+            if only_labels is not None and osb_label not in only_labels:
+                continue
+            box = self._fuel_osb_box(rect, osb_label)
             flashing = context.is_osb_flashing(osb_label)
             if osb_label in {"R2", "R3"}:
                 draw_label_lines_2_3(box, text, "right", flashing)

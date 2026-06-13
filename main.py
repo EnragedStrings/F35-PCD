@@ -56,6 +56,8 @@ try:
 except Exception:
     websocket_client = None  # type: ignore
 
+APP_VERSION = "1.0.0"
+
 # Prefer modularized support code from ./scripts while keeping main.py at root.
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
 if os.path.isdir(_SCRIPTS_DIR):
@@ -67,6 +69,7 @@ if os.path.isdir(_SCRIPTS_DIR):
 import formats
 import app_paths
 from app_paths import is_frozen, migrate_legacy_writable_entries, resource_path, writable_path
+from perf_watchdog import create_slow_frame_watchdog
 from button_types import (
     ButtonState,
     ButtonType,
@@ -401,14 +404,15 @@ ICAWS_HEIGHT = int(1 * DPI)
 
 PORTAL_WIDTH = int(5 * DPI)
 PORTAL_HEIGHT = int(7 * DPI)
-# Subportals are 1.75 inches tall; primary content area is the remainder of the 7.0-inch portal.
-SUB_PORTAL_HEIGHT = int(1.75 * DPI)
+# Subportals are 2.0 inches tall; primary content area is the remainder of the 7.0-inch portal.
+SUB_PORTAL_HEIGHT = int(2.0 * DPI)
 MAIN_PORTAL_HEIGHT = int(WINDOW_HEIGHT - SUB_PORTAL_HEIGHT - ICAWS_HEIGHT)
 SUB_PORTAL_WIDTH = int(2.5 * DPI)
 
 OSB_WIDTH = int(1 * DPI)
 # Display format OSBs are 1.0in tall.
 OSB_HEIGHT = int(0.875 * DPI)
+SIDE_OSB_Y_SHIFT = int(0.25 * DPI)
 # VDED grid cells remain at 0.875in.
 VDED_CELL_HEIGHT = int((7 / 8) * DPI)
 OSB_FLASH_MS = 250
@@ -600,11 +604,16 @@ def random_bos_qty_trimmed() -> int:
     return random.randint(lo, hi)
 
 
-CONSOLE_CAPTURE_MAX_LINES = 4000
-_CONSOLE_CAPTURE_LINES: deque[str] = deque(maxlen=CONSOLE_CAPTURE_MAX_LINES)
+# Keep the full session console capture so PMD/DR DATA PUMP can export the
+# current terminal/cmd log on demand.
+CONSOLE_CAPTURE_MAX_LINES = 0
+_CONSOLE_CAPTURE_LINES: deque[str] = deque()
 _CONSOLE_CAPTURE_LOCK = threading.Lock()
 _CONSOLE_CAPTURE_INSTALLED = False
 _CONSOLE_CAPTURE_SEQ = 0
+_CRASH_LOG_HOOK_INSTALLED = False
+_ORIGINAL_EXCEPTHOOK = sys.excepthook
+_ORIGINAL_THREADING_EXCEPTHOOK = getattr(threading, "excepthook", None)
 
 TERM_HISTORY_MAX = 200
 TERM_SCROLL_STEP_LINES = 3
@@ -773,6 +782,69 @@ def _console_capture_snapshot_with_seq() -> Tuple[List[str], int]:
         return list(_CONSOLE_CAPTURE_LINES), int(_CONSOLE_CAPTURE_SEQ)
 
 
+def _save_console_capture_pmdlog(label: str = "") -> Optional[Path]:
+    lines = _console_capture_snapshot()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = "".join(ch for ch in str(label).strip().lower() if ch.isalnum() or ch in {"_", "-"})
+    suffix_text = f"_{suffix}" if suffix != "" else ""
+    logs_dir = writable_path("logs")
+    out_path = logs_dir / f"{timestamp}{suffix_text}.pmdlog"
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8", errors="replace", newline="\n") as f:
+            f.write(f"F-35 PCD PMD DATA PUMP LOG\n")
+            f.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
+            f.write(f"Lines: {len(lines)}\n")
+            f.write("=" * 80 + "\n")
+            for line in lines:
+                f.write(str(line).replace("\r", "") + "\n")
+        print(f"[PMD/DR][DATA PUMP] saved console log: {out_path}")
+        return out_path
+    except Exception as exc:
+        print(f"[PMD/DR][DATA PUMP] failed to save console log: {exc}")
+        return None
+
+
+def install_crash_log_hook() -> None:
+    global _CRASH_LOG_HOOK_INSTALLED
+    if _CRASH_LOG_HOOK_INSTALLED:
+        return
+
+    def _crash_excepthook(exc_type, exc_value, exc_tb) -> None:
+        try:
+            _console_capture_append_line("[CRASH] Uncaught exception; writing PMD log.")
+            for line in traceback.format_exception(exc_type, exc_value, exc_tb):
+                for subline in str(line).rstrip().splitlines():
+                    _console_capture_append_line(subline)
+            _save_console_capture_pmdlog("crash")
+        except Exception:
+            pass
+        try:
+            _ORIGINAL_EXCEPTHOOK(exc_type, exc_value, exc_tb)
+        except Exception:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _crash_excepthook
+    if _ORIGINAL_THREADING_EXCEPTHOOK is not None:
+        def _thread_crash_excepthook(args) -> None:
+            try:
+                thread_name = getattr(getattr(args, "thread", None), "name", "unknown")
+                _console_capture_append_line(f"[CRASH] Uncaught thread exception in {thread_name}; writing PMD log.")
+                for line in traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback):
+                    for subline in str(line).rstrip().splitlines():
+                        _console_capture_append_line(subline)
+                _save_console_capture_pmdlog("thread_crash")
+            except Exception:
+                pass
+            try:
+                _ORIGINAL_THREADING_EXCEPTHOOK(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_crash_excepthook
+    _CRASH_LOG_HOOK_INSTALLED = True
+
+
 class _ConsoleCaptureTee:
     def __init__(self, original) -> None:
         self._orig = original
@@ -902,7 +974,7 @@ COMM_BUS_SYNC_INTERVAL_MS = max(60, int(os.environ.get("COMM_BUS_SYNC_INTERVAL_M
 COMM_BUS_RETENTION_MS = max(2000, int(os.environ.get("COMM_BUS_RETENTION_MS", "20000")))
 COMM_BUS_CLEAN_INTERVAL_MS = max(500, int(os.environ.get("COMM_BUS_CLEAN_INTERVAL_MS", "3000")))
 RECORDINGS_CLEANUP_INTERVAL_MS = max(1000, int(os.environ.get("RECORDINGS_CLEANUP_INTERVAL_MS", "5000")))
-FORMATS_MTIME_CHECK_INTERVAL_MS = max(100, int(os.environ.get("FORMATS_MTIME_CHECK_INTERVAL_MS", "500")))
+FORMATS_MTIME_CHECK_INTERVAL_MS = max(100, int(os.environ.get("FORMATS_MTIME_CHECK_INTERVAL_MS", "5000")))
 RECORDING_RETENTION_SECONDS = 10 * 60
 SOUND_ENABLED = True
 SOUND_VOLUME = 0.5
@@ -923,6 +995,8 @@ SFX_CH_ENGINE_START = 14
 SFX_CH_ENGINE_LOOP_A = 15
 SFX_CH_ENGINE_LOOP_B = 16
 SFX_CH_ENGINE_OFF = 17
+SFX_CH_ICAWS_WARNING = 18
+SFX_CH_ICAWS_CAUTION = 19
 SFX_CROSSFADE_MS = max(50, min(1000, int(os.environ.get("SFX_CROSSFADE_MS", "180"))))
 ENGINE_PITCH_CROSSFADE_MS = max(1, min(300, int(os.environ.get("ENGINE_PITCH_CROSSFADE_MS", "80"))))
 ENGINE_LOOP_PITCH_MIN = float(os.environ.get("ENGINE_LOOP_PITCH_MIN", "1.0"))
@@ -2368,6 +2442,9 @@ def _discover_frozen_version() -> str:
             ver = _extract_version_token(raw)
             if ver != "":
                 return ver
+    explicit_version = _extract_version_token(APP_VERSION)
+    if explicit_version != "":
+        return explicit_version
     exe_dir = Path(sys.executable).resolve().parent
     state_candidates = [
         exe_dir / "launcher_state.json",
@@ -2824,6 +2901,69 @@ def _safe_write_json(path: Path, payload: object) -> bool:
         return True
     except Exception:
         return False
+
+
+_ASYNC_JSON_WRITE_LOCK = threading.Lock()
+_ASYNC_JSON_WRITE_EVENT = threading.Event()
+_ASYNC_JSON_WRITE_PENDING: Dict[str, Tuple[Path, str]] = {}
+_ASYNC_JSON_WRITE_THREAD: Optional[threading.Thread] = None
+_PLUGIN_JSON_READ_CACHE_LOCK = threading.Lock()
+_PLUGIN_JSON_READ_CACHE: Dict[str, Tuple[float, dict]] = {}
+
+
+def _async_json_write_loop() -> None:
+    while True:
+        _ASYNC_JSON_WRITE_EVENT.wait()
+        while True:
+            with _ASYNC_JSON_WRITE_LOCK:
+                if len(_ASYNC_JSON_WRITE_PENDING) <= 0:
+                    _ASYNC_JSON_WRITE_EVENT.clear()
+                    break
+                _key, (path, text) = _ASYNC_JSON_WRITE_PENDING.popitem()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            except Exception as exc:
+                print(f"[PMD][IO] async json write failed path={path}: {exc}")
+
+
+def _enqueue_async_json_write(path: Path, payload: object) -> bool:
+    global _ASYNC_JSON_WRITE_THREAD
+    try:
+        text = json.dumps(payload, indent=2)
+    except Exception:
+        return False
+    try:
+        key = os.path.normcase(os.path.abspath(str(path)))
+    except Exception:
+        key = str(path)
+    with _ASYNC_JSON_WRITE_LOCK:
+        _ASYNC_JSON_WRITE_PENDING[key] = (path, text)
+        if _ASYNC_JSON_WRITE_THREAD is None or not _ASYNC_JSON_WRITE_THREAD.is_alive():
+            _ASYNC_JSON_WRITE_THREAD = threading.Thread(
+                target=_async_json_write_loop,
+                name="PmdJsonWriter",
+                daemon=True,
+            )
+            _ASYNC_JSON_WRITE_THREAD.start()
+        _ASYNC_JSON_WRITE_EVENT.set()
+    return True
+
+
+def _cached_plugin_read_json(path: Path, fallback: Optional[dict] = None, ttl_s: float = 0.50) -> dict:
+    try:
+        key = os.path.normcase(os.path.abspath(str(path)))
+    except Exception:
+        key = str(path)
+    now = time.perf_counter()
+    with _PLUGIN_JSON_READ_CACHE_LOCK:
+        cached = _PLUGIN_JSON_READ_CACHE.get(key)
+        if cached is not None and now < float(cached[0]):
+            return dict(cached[1])
+    data = _safe_read_json(path, fallback)
+    with _PLUGIN_JSON_READ_CACHE_LOCK:
+        _PLUGIN_JSON_READ_CACHE[key] = (now + max(0.0, float(ttl_s)), dict(data))
+    return data
 
 def _seclvl_has_dist_credentials(seclvl_state: Dict[str, object]) -> bool:
     secrets_obj = _dist_get_secrets()
@@ -3676,13 +3816,25 @@ comm_overlay_state: Dict[str, object] = {
     "rx_active": {"coma": False, "comb": False, "comc": False},
 }
 FONT_SIZE_BOOST = 5
+_MAIN_FONT_CACHE: Dict[int, pygame.font.Font] = {}
+_MAIN_FONT_PATH_CACHE: Optional[Path] = None
 
 def load_font(size: int) -> pygame.font.Font:
+    global _MAIN_FONT_PATH_CACHE
     adjusted_size = max(1, int(size) + FONT_SIZE_BOOST)
-    font_path = resource_path("PCD.ttf")
+    cached = _MAIN_FONT_CACHE.get(adjusted_size)
+    if cached is not None:
+        return cached
+    if _MAIN_FONT_PATH_CACHE is None:
+        font_path = resource_path("PCD.ttf")
+        _MAIN_FONT_PATH_CACHE = font_path if font_path.exists() else Path()
+    font_path = _MAIN_FONT_PATH_CACHE
     if font_path.exists():
-        return pygame.font.Font(str(font_path), adjusted_size)
-    return pygame.font.SysFont("consolas", adjusted_size)
+        font = pygame.font.Font(str(font_path), adjusted_size)
+    else:
+        font = pygame.font.SysFont("consolas", adjusted_size)
+    _MAIN_FONT_CACHE[adjusted_size] = font
+    return font
 
 def get_portal_rect(index: int) -> pygame.Rect:
     return pygame.Rect(
@@ -3869,7 +4021,7 @@ def build_osb_zones(primary_rect: pygame.Rect, portal_index: int) -> List[OsbZon
 
     if side_count > 0:
         top_offset = osb_height
-        left_y = primary_rect.y + top_offset
+        left_y = primary_rect.y + top_offset - SIDE_OSB_Y_SHIFT
         cell = osb_height
         for i in range(side_count):
             start = left_y + int(i * cell)
@@ -3969,6 +4121,12 @@ configure_runtime_hooks(
 )
 
 
+def cockpit_panel_page_arrow_rects(popup: pygame.Rect) -> Tuple[pygame.Rect, pygame.Rect]:
+    y = int(popup.bottom - 48)
+    left_rect = pygame.Rect(int(popup.centerx - 118), y, 36, 30)
+    right_rect = pygame.Rect(int(popup.centerx + 82), y, 36, 30)
+    return left_rect, right_rect
+
 
 def draw_backtick_popup(screen: pygame.Surface, page_index: int = 0) -> Tuple[pygame.Rect, int]:
     pad = 50
@@ -3992,6 +4150,23 @@ def draw_backtick_popup(screen: pygame.Surface, page_index: int = 0) -> Tuple[py
     screen.blit(title, title.get_rect(midtop=(popup.centerx, popup.top + 4)))
     screen.blit(page_txt, page_txt.get_rect(midbottom=(popup.centerx, popup.bottom - 26)))
     screen.blit(hint, hint.get_rect(midbottom=(popup.centerx, popup.bottom - 6)))
+    left_arrow_rect, right_arrow_rect = cockpit_panel_page_arrow_rects(popup)
+    for arrow_rect, direction in ((left_arrow_rect, -1), (right_arrow_rect, 1)):
+        pygame.draw.rect(screen, (0, 0, 0), arrow_rect)
+        pygame.draw.rect(screen, (0, 255, 255), arrow_rect, 1)
+        if direction < 0:
+            points = [
+                (arrow_rect.right - 9, arrow_rect.top + 6),
+                (arrow_rect.left + 9, arrow_rect.centery),
+                (arrow_rect.right - 9, arrow_rect.bottom - 6),
+            ]
+        else:
+            points = [
+                (arrow_rect.left + 9, arrow_rect.top + 6),
+                (arrow_rect.right - 9, arrow_rect.centery),
+                (arrow_rect.left + 9, arrow_rect.bottom - 6),
+            ]
+        pygame.draw.polygon(screen, (0, 255, 0), points, 0)
 
     # Panels use full popup height; title/hints are overlays and do not reserve space.
     content = pygame.Rect(popup.left + 4, popup.top + 4, popup.width - 8, popup.height - 8)
@@ -6580,50 +6755,117 @@ def draw_portal4_menu_popup(
             keybind_page = int(pmd_dr_state.get("keybind_page", 0))
         except Exception:
             keybind_page = 0
-        keybind_page = 1 if keybind_page == 1 else 0
+        keybind_page = max(0, min(3, keybind_page))
         pmd_dr_state["keybind_page"] = keybind_page
-        entries = [
-            ("A1", "rud_left", "RUDDER\nLEFT"),
-            ("A2", "ail_left", "AILERON\nLEFT"),
-            ("B1", "elev_up", "ELEVATOR\nUP"),
-            ("B2", "elev_down", "ELEVATOR\nDOWN"),
-            ("C1", "rud_right", "RUDDER\nRIGHT"),
-            ("C2", "ail_right", "AILERON\nRIGHT"),
-            ("A4", "czoom_minus", "CURSOR\nZOOM -"),
-            ("A5", "pan_left", "PAN LT"),
-            ("B4", "pan_up", "PAN UP"),
-            ("B5", "pan_down", "PAN DN"),
-            ("C4", "czoom_plus", "CURSOR\nZOOM +"),
-            ("C5", "pan_right", "PAN RT"),
-            ("D1", "rec_cap", "RECORD/\nCAPTURE"),
-            ("D2", "strt_rec", "START\nRECORDING"),
-            ("D3", "cap_area", "CAPTURE\nAREA"),
-            ("D4", "restart", "RESTART"),
-            ("D5", "ful_scrn", "FULL\nSCREEN"),
-            ("D6", "brake", "BRAKE"),
-            ("E1", "throt_plus", "THROTTLE\nUP"),
-            ("E2", "throt_minus", "THROTTLE\nDOWN"),
-            ("E3", "com_a", "COM A"),
-            ("E4", "com_b", "COM B"),
-            ("E5", "com_c", "COM C"),
-            ("A7", "poi_plus", "POI -"),
-            ("B7", "poi_up", "POI UP"),
-            ("C7", "poi_minus", "POI -"),
-            ("A8", "poi_lt", "POI LT"),
-            ("B8", "poi_dn", "POI DN"),
-            ("C8", "poi_rt", "POI RT"),
+        keybind_subpage = str(pmd_dr_state.get("keybind_subpage", "") or "").strip().lower()
+        if keybind_subpage not in {"stick", "throttle"}:
+            keybind_subpage = ""
+            pmd_dr_state["keybind_subpage"] = ""
+
+        page_titles = [
+            "NON-HOTAS MAPPINGS",
+            "BASE HOTAS INPUTS",
+            "THROTTLE BUTTON INPUTS",
+            "STICK BUTTON INPUTS",
         ]
-        if keybind_page == 1:
-            entries = [
-                ("A1", "engine_run", "ENGINE\nRUN"),
-                ("B1", "gun_trigger", "GUN\nTRIGGER"),
-                ("C1", "pickle", "PICKLE"),
-                ("D1", "com_mute", "COM\nMUTE"),
-                ("E1", "wpn_sel", "WPN SEL"),
-                ("A2", "ldg_gear", "LDG\nGEAR"),
-                ("B2", "tx", "TX"),
-                ("E2", "toi", "TOI"),
-            ]
+
+        page_entries = {
+            0: [
+                ("A2", "rec_cap", "RECORD/\nCAPTURE"),
+                ("B2", "strt_rec", "START\nRECORDING"),
+                ("C2", "cap_area", "CAPTURE\nAREA"),
+                ("D2", "restart", "RESTART"),
+                ("E2", "ful_scrn", "FULL\nSCREEN"),
+                ("A4", "com_mute", "COM\nMUTE"),
+                ("B4", "com_a", "COM A"),
+                ("C4", "com_b", "COM B"),
+                ("D4", "com_c", "COM C"),
+            ],
+            1: [
+                ("B2", "rud_left", "RUDDER\nLEFT"),
+                ("C2", "elev_up", "PITCH\nDOWN"),
+                ("D2", "rud_right", "RUDDER\nRIGHT"),
+                ("B3", "ail_left", "ROLL\nLEFT"),
+                ("C3", "elev_down", "PITCH\nUP"),
+                ("D3", "ail_right", "ROLL\nRIGHT"),
+                ("B4", "throt_minus", "THROTTLE\nDOWN"),
+                ("D4", "throt_plus", "THROTTLE\nUP"),
+                ("A6", "brake", "BRAKE"),
+                ("B6", "ldg_gear", "LANDING\nGEAR"),
+                ("C6", "ipp_run", "IPP\nRUN"),
+                ("D6", "engine_run", "ENGINE\nRUN"),
+                ("E6", "tx", "TX"),
+            ],
+            2: [
+                ("B2", "mngmt_z", "MNGMT\nZ"),
+                ("C2", "mngmt_up", "MNGMT\nUP"),
+                ("D2", "mngmt_down", "MNGMT\nDOWN"),
+                ("A3", "wms_z", "WMS\nZ"),
+                ("A4", "wms_fwd", "WMS\nFWD"),
+                ("A5", "wms_aft", "WMS\nAFT"),
+                ("A6", "wms_left", "WMS\nLEFT"),
+                ("A7", "wms_right", "WMS\nRIGHT"),
+                ("C3", "slew_z", "SLEW\nZ"),
+                ("C4", "slew_fwd", "SLEW\nFWD"),
+                ("C5", "slew_aft", "SLEW\nAFT"),
+                ("C6", "slew_left", "SLEW\nLEFT"),
+                ("C7", "slew_right", "SLEW\nRIGHT"),
+                ("E3", "comm_ctl_z", "COMM CTL\nZ"),
+                ("E4", "comm_ctl_fwd", "COMM CTL\nFWD"),
+                ("E5", "comm_ctl_aft", "COMM CTL\nAFT"),
+                ("E6", "comm_ctl_left", "COMM CTL\nLEFT"),
+                ("E7", "comm_ctl_right", "COMM CTL\nRIGHT"),
+            ],
+            3: [
+                ("A2", "pickle", "WEAPON\nRELEASE"),
+                ("B2", "wpn_sel", "WPN REL\nMODE"),
+                ("C2", "gun_trigger", "GUN\nENABLE"),
+                ("D2", "disconnect", "DISCONNECT"),
+                ("E2", "nws", "NWS"),
+                ("A4", "tms_up", "TMS\nUP"),
+                ("A5", "tms_down", "TMS\nDOWN"),
+                ("A6", "tms_left", "TMS\nLEFT"),
+                ("A7", "tms_right", "TMS\nRIGHT"),
+                ("C4", "dms_up", "DMS\nUP"),
+                ("C5", "dms_down", "DMS\nDOWN"),
+                ("C6", "dms_left", "DMS\nLEFT"),
+                ("C7", "dms_right", "DMS\nRIGHT"),
+                ("E4", "fov_up", "FOV\nUP"),
+                ("E5", "fov_down", "FOV\nDOWN"),
+                ("E6", "fov_left", "FOV\nLEFT"),
+                ("E7", "fov_right", "FOV\nRIGHT"),
+            ],
+        }
+        subpage_entries = {
+            "stick": [
+                ("A2", "cms_up", "CMS\nUP"),
+                ("B2", "cms_down", "CMS\nDOWN"),
+                ("C2", "cms_left", "CMS\nLEFT"),
+                ("D2", "cms_right", "CMS\nRIGHT"),
+            ],
+            "throttle": [
+                ("A2", "cage_uncage", "CAGE\nUNCAGE"),
+                ("B2", "mpo", "MPO"),
+                ("C2", "pol_ctrl", "POL\nCTRL"),
+                ("D2", "aprch_pwr_comp", "APRCH PWR\nCOMP"),
+                ("A4", "cffl_z", "CFFL\nZ"),
+                ("A5", "cffl_fwd", "CFFL\nFWD"),
+                ("A6", "cffl_aft", "CFFL\nAFT"),
+                ("C4", "spd_brk_fwd", "SPD BRK\nFWD"),
+                ("C5", "spd_brk_aft", "SPD BRK\nAFT"),
+                ("E4", "spd_hold_z", "SPD HOLD\nZ"),
+                ("E5", "spd_hold_up", "SPD HOLD\nUP"),
+                ("E6", "spd_hold_down", "SPD HOLD\nDOWN"),
+            ],
+        }
+        entries = subpage_entries.get(keybind_subpage, page_entries.get(keybind_page, []))
+
+        title_box = cell_rect_by_name("A1").union(cell_rect_by_name("E1"))
+        pygame.draw.rect(screen, (0, 0, 0), title_box.inflate(-2, -2))
+        title_font = formats.get_font(18)
+        title_surf = title_font.render(page_titles[keybind_page], True, LINE_COLOR)
+        screen.blit(title_surf, title_surf.get_rect(center=title_box.center))
+
         for cell_name, action, label in entries:
             zone_key = f"PMD_KEYBINDS_EDIT_{action.upper()}"
             box = cell_rect_by_name(cell_name)
@@ -6633,12 +6875,57 @@ def draw_portal4_menu_popup(
             shown_key = scratch if (is_selected and scratch != "") else _popup_pmd_keybind_current_char(action)
             flashing = item_flash_until.get(zone_key, 0) > now_ms
             draw_line(box, 1, shown_key, (255, 255, 255), flashing, box_selected=is_selected and not flashing)
-            if "\n" in label:
-                line_a, line_b = label.split("\n", 1)
-                draw_line(box, 2, line_a, LINE_COLOR, flashing)
-                draw_line(box, 3, line_b, LINE_COLOR, flashing)
-            else:
-                draw_line(box, 2, label, LINE_COLOR, flashing)
+            for idx, line in enumerate(str(label).split("\n"), start=2):
+                draw_line(box, idx, line, LINE_COLOR, flashing)
+
+        a8 = cell_rect_by_name("A8")
+        zones["PMD_KEYBINDS_A8_HOTAS"] = a8
+        draw_popup_button(
+            a8,
+            ButtonState(
+                button_id="PMD_KEYBINDS_A8_HOTAS",
+                button_type=ButtonType.PAGE_ACCESS,
+                text="HOTAS>",
+                flash_until_ms=item_flash_until.get("PMD_KEYBINDS_A8_HOTAS", 0),
+            ),
+        )
+
+        if keybind_subpage in {"stick", "throttle"}:
+            b8 = cell_rect_by_name("B8")
+            zones["PMD_KEYBINDS_B8_SUBPREV"] = b8
+            draw_popup_button(
+                b8,
+                ButtonState(
+                    button_id="PMD_KEYBINDS_B8_SUBPREV",
+                    button_type=ButtonType.PAGE_ACCESS,
+                    text="<PREV",
+                    flash_until_ms=item_flash_until.get("PMD_KEYBINDS_B8_SUBPREV", 0),
+                ),
+            )
+        elif keybind_page in {2, 3}:
+            b8 = cell_rect_by_name("B8")
+            zones["PMD_KEYBINDS_B8_CONT"] = b8
+            draw_popup_button(
+                b8,
+                ButtonState(
+                    button_id="PMD_KEYBINDS_B8_CONT",
+                    button_type=ButtonType.PAGE_ACCESS,
+                    text="CONT>",
+                    flash_until_ms=item_flash_until.get("PMD_KEYBINDS_B8_CONT", 0),
+                ),
+            )
+
+        c8 = cell_rect_by_name("C8")
+        zones["PMD_KEYBINDS_C8_PREV"] = c8
+        draw_popup_button(
+            c8,
+            ButtonState(
+                button_id="PMD_KEYBINDS_C8_PREV",
+                button_type=ButtonType.PAGE_ACCESS,
+                text="<PREV",
+                flash_until_ms=item_flash_until.get("PMD_KEYBINDS_C8_PREV", 0),
+            ),
+        )
 
         d8 = cell_rect_by_name("D8")
         zones["PMD_KEYBINDS_D8_NEXT"] = d8
@@ -6647,21 +6934,11 @@ def draw_portal4_menu_popup(
             ButtonState(
                 button_id="PMD_KEYBINDS_D8_NEXT",
                 button_type=ButtonType.PAGE_ACCESS,
-                text="NEXT>" if keybind_page == 0 else "<PREV",
+                text="NEXT>",
                 flash_until_ms=item_flash_until.get("PMD_KEYBINDS_D8_NEXT", 0),
             ),
         )
-        e7 = cell_rect_by_name("E7")
-        zones["PMD_KEYBINDS_E7_HOTAS"] = e7
-        draw_popup_button(
-            e7,
-            ButtonState(
-                button_id="PMD_KEYBINDS_E7_HOTAS",
-                button_type=ButtonType.PAGE_ACCESS,
-                text="HOTAS>",
-                flash_until_ms=item_flash_until.get("PMD_KEYBINDS_E7_HOTAS", 0),
-            ),
-        )
+
         e8 = cell_rect_by_name("E8")
         zones["PMD_KEYBINDS_E8_MENU"] = e8
         draw_popup_button(
@@ -6702,13 +6979,8 @@ def draw_portal4_menu_popup(
             binding_missing = isinstance(binding, dict) and (not _popup_hotas_binding_is_connected(binding))
             flashing = item_flash_until.get(zone_key, 0) > now_ms
             draw_line(box, 1, bind_text, (255, 0, 0) if binding_missing else (255, 255, 255), flashing)
-            if "\n" in label:
-                a, b = label.split("\n", 1)
-                draw_line(box, 2, _fit_cell_text(a, box, formats.get_font(14)), LINE_COLOR, flashing)
-                draw_line(box, 3, _fit_cell_text(b, box, formats.get_font(14)), LINE_COLOR, flashing)
-            else:
-                draw_line(box, 2, _fit_cell_text(label, box, formats.get_font(14)), LINE_COLOR, flashing)
-            # For axis bindings, show a live cyan line indicating current axis input.
+            for idx, line in enumerate(str(label).split("\n"), start=2):
+                draw_line(box, idx, _fit_cell_text(line, box, formats.get_font(14)), LINE_COLOR, flashing)
             is_active = False
             is_axis_binding = False
             if isinstance(binding, dict) and str(binding.get("type", "")).strip().lower() == "axis":
@@ -6725,7 +6997,6 @@ def draw_portal4_menu_popup(
                         axis_value = 0.0
                     axis_value = max(-1.0, min(1.0, axis_value))
                     is_active = abs(axis_value) >= 0.2
-                axis_values_raw = pmd_dr_state.get("hotas_axis", {})
                 mid_x = int(box.centerx)
                 y = int(line_slot_y(box, 3, formats.get_font(14)) + formats.get_font(14).get_height() - 2)
                 half_span = max(8, (box.width // 2) - 8)
@@ -6742,113 +7013,150 @@ def draw_portal4_menu_popup(
             hotas_page = int(pmd_dr_state.get("hotas_page", 0))
         except Exception:
             hotas_page = 0
-        hotas_page = 1 if hotas_page == 1 else 0
+        hotas_page = max(0, min(2, hotas_page))
         pmd_dr_state["hotas_page"] = hotas_page
+        hotas_subpage = str(pmd_dr_state.get("hotas_subpage", "") or "").strip().lower()
+        if hotas_subpage not in {"stick", "throttle"}:
+            hotas_subpage = ""
+            pmd_dr_state["hotas_subpage"] = ""
 
-        slew_mode = _popup_hotas_slew_mode()
-        pan_mode = _popup_hotas_pan_mode()
-        if hotas_page == 0:
-            _draw_hotas_action("A1", "pitch", "PITCH (A)")
-            _draw_hotas_action("B1", "yaw", "YAW (A)")
-            _draw_hotas_action("C1", "roll", "ROLL (A)")
-            _draw_hotas_action("E4", "throttle", "THROTTLE\n(A)")
-            _draw_hotas_action("A2", "zoom_zero", "ZOOM 0\n(H)/(B)")
-            _draw_hotas_action("B2", "zoom_plus", "ZOOM +\n(H)/(B)")
-            _draw_hotas_action("C2", "zoom_minus", "ZOOM -\n(H)/(B)")
-            _draw_hotas_action("A7", "poi_plus", "POI +\n(H)/(B)")
-            _draw_hotas_action("C7", "poi_minus", "POI -\n(H)/(B)")
-            _draw_hotas_action("B7", "poi_up", "POI UP\n(H)/(B)")
-            _draw_hotas_action("A8", "poi_left", "POI LT\n(H)/(B)")
-            _draw_hotas_action("B8", "poi_down", "POI DN\n(H)/(B)")
-            _draw_hotas_action("C8", "poi_right", "POI RT\n(H)/(B)")
-            _draw_hotas_action("A4", "com_a", "COM A\n(H)/(B)")
-            _draw_hotas_action("B4", "com_b", "COM B\n(H)/(B)")
-            _draw_hotas_action("C4", "com_c", "COM C\n(H)/(B)")
-        else:
-            slew_mode_btn = cell_rect_by_name("A1")
-            zones["PMD_HOTAS_A1_SLEW_MODE"] = slew_mode_btn
+        page_titles = [
+            "BASE HOTAS INPUTS",
+            "THROTTLE BUTTON INPUTS",
+            "STICK BUTTON INPUTS",
+        ]
+        page_entries = {
+            0: [
+                ("B2", "pitch", "PITCH\n(A)"),
+                ("C2", "yaw", "YAW\n(A)"),
+                ("D2", "roll", "ROLL\n(A)"),
+                ("B3", "brake_left", "BRAKE LT\n(A)"),
+                ("C3", "throttle", "THROTTLE\n(A)"),
+                ("D3", "brake_right", "BRAKE RT\n(A)"),
+                ("B5", "ldg_gear", "LANDING\nGEAR (H)/(B)"),
+                ("C5", "ipp_run", "IPP RUN\n(H)/(B)"),
+                ("D5", "engine_run", "ENGINE RUN\n(H)/(B)"),
+            ],
+            1: [
+                ("B2", "mngmt_z", "MNGMT Z\n(H)/(B)"),
+                ("C2", "mngmt_up", "MNGMT UP\n(H)/(B)"),
+                ("D2", "mngmt_down", "MNGMT DOWN\n(H)/(B)"),
+                ("C3", "mngmt", "MNGMT\n(A)"),
+                ("A3", "wms_z", "WMS Z\n(H)/(B)"),
+                ("A4", "wms_fwd", "WMS FWD\n(H)/(B)"),
+                ("A5", "wms_aft", "WMS AFT\n(H)/(B)"),
+                ("A6", "wms_left", "WMS LEFT\n(H)/(B)"),
+                ("A7", "wms_right", "WMS RIGHT\n(H)/(B)"),
+                ("C4", "slew_z", "SLEW Z\n(H)/(B)"),
+                ("C5", "slew_lr", "SLEW X\n(A)"),
+                ("C6", "slew_ud", "SLEW Y\n(A)"),
+                ("E3", "comm_ctl_z", "COMM CTL Z\n(H)/(B)"),
+                ("E4", "comm_ctl_fwd", "COMM CTL FWD\n(H)/(B)"),
+                ("E5", "comm_ctl_aft", "COMM CTL AFT\n(H)/(B)"),
+                ("E6", "comm_ctl_left", "COMM CTL LEFT\n(H)/(B)"),
+                ("E7", "comm_ctl_right", "COMM CTL RIGHT\n(H)/(B)"),
+            ],
+            2: [
+                ("A2", "pickle", "WEAPON\nRELEASE"),
+                ("B2", "wpn_sel", "WPN REL\nMODE"),
+                ("C2", "gun_trigger", "GUN\nENABLE"),
+                ("D2", "disconnect", "DISCONNECT\n(H)/(B)"),
+                ("E2", "nws", "NWS\n(H)/(B)"),
+                ("A4", "tms_up", "TMS UP\n(H)/(B)"),
+                ("A5", "tms_down", "TMS DOWN\n(H)/(B)"),
+                ("A6", "tms_left", "TMS LEFT\n(H)/(B)"),
+                ("A7", "tms_right", "TMS RIGHT\n(H)/(B)"),
+                ("C4", "dms_up", "DMS UP\n(H)/(B)"),
+                ("C5", "dms_down", "DMS DOWN\n(H)/(B)"),
+                ("C6", "dms_left", "DMS LEFT\n(H)/(B)"),
+                ("C7", "dms_right", "DMS RIGHT\n(H)/(B)"),
+                ("E4", "fov_up", "FOV UP\n(H)/(B)"),
+                ("E5", "fov_down", "FOV DOWN\n(H)/(B)"),
+                ("E6", "fov_left", "FOV LEFT\n(H)/(B)"),
+                ("E7", "fov_right", "FOV RIGHT\n(H)/(B)"),
+            ],
+        }
+        subpage_entries = {
+            "stick": [
+                ("A2", "cms_up", "CMS UP\n(H)/(B)"),
+                ("B2", "cms_down", "CMS DOWN\n(H)/(B)"),
+                ("C2", "cms_left", "CMS LEFT\n(H)/(B)"),
+                ("D2", "cms_right", "CMS RIGHT\n(H)/(B)"),
+            ],
+            "throttle": [
+                ("A2", "cage_uncage", "CAGE\nUNCAGE (H)/(B)"),
+                ("B2", "mpo", "MPO\n(H)/(B)"),
+                ("C2", "pol_ctrl", "POL CTRL\n(H)/(B)"),
+                ("D2", "aprch_pwr_comp", "APRCH PWR\nCOMP (H)/(B)"),
+                ("A4", "cffl_z", "CFFL Z\n(H)/(B)"),
+                ("A5", "cffl_fwd", "CFFL FWD\n(H)/(B)"),
+                ("A6", "cffl_aft", "CFFL AFT\n(H)/(B)"),
+                ("C4", "spd_brk_fwd", "SPD BRK FWD\n(H)/(B)"),
+                ("C5", "spd_brk_aft", "SPD BRK AFT\n(H)/(B)"),
+                ("E4", "spd_hold_z", "SPD HOLD Z\n(H)/(B)"),
+                ("E5", "spd_hold_up", "SPD HOLD UP\n(H)/(B)"),
+                ("E6", "spd_hold_down", "SPD HOLD DOWN\n(H)/(B)"),
+            ],
+        }
+        entries = subpage_entries.get(hotas_subpage, page_entries.get(hotas_page, []))
+
+        title_box = cell_rect_by_name("A1").union(cell_rect_by_name("E1"))
+        pygame.draw.rect(screen, (0, 0, 0), title_box.inflate(-2, -2))
+        title_font = formats.get_font(18)
+        title_surf = title_font.render(page_titles[hotas_page], True, LINE_COLOR)
+        screen.blit(title_surf, title_surf.get_rect(center=title_box.center))
+
+        for cell_name, action, label in entries:
+            _draw_hotas_action(cell_name, action, label)
+
+        a8 = cell_rect_by_name("A8")
+        zones["PMD_HOTAS_A8_HOTAS"] = a8
+        draw_popup_button(
+            a8,
+            ButtonState(
+                button_id="PMD_HOTAS_A8_HOTAS",
+                button_type=ButtonType.PAGE_ACCESS,
+                text="<KEYBRD",
+                flash_until_ms=item_flash_until.get("PMD_HOTAS_A8_HOTAS", 0),
+            ),
+        )
+
+        if hotas_subpage in {"stick", "throttle"}:
+            b8 = cell_rect_by_name("B8")
+            zones["PMD_HOTAS_B8_SUBPREV"] = b8
             draw_popup_button(
-                slew_mode_btn,
+                b8,
                 ButtonState(
-                    button_id="PMD_HOTAS_A1_SLEW_MODE",
-                    button_type=ButtonType.MOMENTARY_SINGLE,
-                    text="SLEW\nAXIS" if slew_mode == "AXIS" else "SLEW\nHAT",
-                    flash_until_ms=item_flash_until.get("PMD_HOTAS_A1_SLEW_MODE", 0),
+                    button_id="PMD_HOTAS_B8_SUBPREV",
+                    button_type=ButtonType.PAGE_ACCESS,
+                    text="<PREV",
+                    flash_until_ms=item_flash_until.get("PMD_HOTAS_B8_SUBPREV", 0),
                 ),
             )
-            if slew_mode == "AXIS":
-                _draw_hotas_action("A2", "slew_lr", "SLEW\nL/R (A)")
-                _draw_hotas_action("B2", "slew_ud", "SLEW\nU/D (A)")
-            else:
-                _draw_hotas_action("B1", "slew_up", "SLEW\nUP (H)/(B)")
-                _draw_hotas_action("A2", "slew_left", "SLEW\nLT (H)/(B)")
-                _draw_hotas_action("B2", "slew_down", "SLEW\nDOWN (H)/(B)")
-                _draw_hotas_action("C2", "slew_right", "SLEW\nRT (H)/(B)")
-
-            pan_mode_btn = cell_rect_by_name("A4")
-            zones["PMD_HOTAS_A4_PAN_MODE"] = pan_mode_btn
+        elif hotas_page in {1, 2}:
+            b8 = cell_rect_by_name("B8")
+            zones["PMD_HOTAS_B8_CONT"] = b8
             draw_popup_button(
-                pan_mode_btn,
+                b8,
                 ButtonState(
-                    button_id="PMD_HOTAS_A4_PAN_MODE",
-                    button_type=ButtonType.MOMENTARY_SINGLE,
-                    text="PAN\nAXIS" if pan_mode == "AXIS" else "PAN\nHAT",
-                    flash_until_ms=item_flash_until.get("PMD_HOTAS_A4_PAN_MODE", 0),
+                    button_id="PMD_HOTAS_B8_CONT",
+                    button_type=ButtonType.PAGE_ACCESS,
+                    text="CONT>",
+                    flash_until_ms=item_flash_until.get("PMD_HOTAS_B8_CONT", 0),
                 ),
             )
-            if pan_mode == "AXIS":
-                _draw_hotas_action("A5", "pan_lr", "PAN\nL/R (A)")
-                _draw_hotas_action("B5", "pan_ud", "PAN\nU/D (A)")
-            else:
-                _draw_hotas_action("B4", "pan_up", "PAN UP\n(H)/(B)")
-                _draw_hotas_action("A5", "pan_left", "PAN LT\n(H)/(B)")
-                _draw_hotas_action("B5", "pan_down", "PAN DN\n(H)/(B)")
-                _draw_hotas_action("C5", "pan_right", "PAN RT\n(H)/(B)")
 
-            _draw_hotas_action("D4", "engine_run", "ENGINE RUN\n(B)")
-            _draw_hotas_action("D5", "gun_trigger", "GUN TRIGGER\n(B)")
-            _draw_hotas_action("D6", "pickle", "PICKLE\n(B)")
-            _draw_hotas_action("D7", "com_mute", "COM MUTE\n(H)/(B)")
-            _draw_hotas_action("E4", "brake", "BRAKE\n(H)/(B)")
-            _draw_hotas_action("E5", "ldg_gear", "LDG GEAR\n(B)")
-            _draw_hotas_action("C1", "slew_select", "SLEW\nSELECT")
-            _draw_hotas_action("E6", "wpn_sel", "WPN SEL\n(H)/(B)")
-            _draw_hotas_action("E7", "toi", "TOI\n(H)/(B)")
-            _draw_hotas_action("B6", "tx", "TX\n(H)/(B)")
-
-        dev_box = merge_cells("D1", "E3")
-        zones["PMD_HOTAS_DEVICES"] = dev_box
-        devices_raw = pmd_dr_state.get("hotas_devices", [])
-        devices = devices_raw if isinstance(devices_raw, list) else []
-        draw_line(dev_box, 1, f"GAMEPADS {len(devices)}", (255, 255, 255), False)
-        font_small = formats.get_font(11)
-        line_h = max(1, font_small.get_height() + 1)
-        list_top = max(dev_box.top + 2, line_slot_y(dev_box, 2, font_small) - 1)
-        list_bottom = dev_box.bottom - 2
-        max_lines = max(0, (list_bottom - list_top) // line_h)
-        list_lines: List[str] = []
-        if len(devices) <= 0:
-            list_lines.append("NO GAMEPADS")
-        else:
-            for idx, dev_raw in enumerate(devices):
-                dev = dev_raw if isinstance(dev_raw, dict) else {}
-                try:
-                    dev_num = int(dev.get("index", idx)) + 1
-                except Exception:
-                    dev_num = idx + 1
-                name = str(dev.get("name", "")).strip() or "UNKNOWN"
-                wrapped = _pmd_wrap_text(f"{dev_num}: {name}", 22, 3)
-                for line in wrapped:
-                    list_lines.append(line)
-        if max_lines > 0 and len(list_lines) > max_lines:
-            list_lines = list_lines[:max_lines]
-        for idx, line in enumerate(list_lines):
-            if idx >= max_lines:
-                break
-            surf = font_small.render(str(line), True, LINE_COLOR)
-            text_x = dev_box.left + 4
-            text_y = list_top + idx * line_h
-            screen.blit(surf, (text_x, text_y))
+        c8 = cell_rect_by_name("C8")
+        zones["PMD_HOTAS_C8_PREV"] = c8
+        draw_popup_button(
+            c8,
+            ButtonState(
+                button_id="PMD_HOTAS_C8_PREV",
+                button_type=ButtonType.PAGE_ACCESS,
+                text="<PREV",
+                flash_until_ms=item_flash_until.get("PMD_HOTAS_C8_PREV", 0),
+            ),
+        )
 
         d8 = cell_rect_by_name("D8")
         zones["PMD_HOTAS_D8_NEXT"] = d8
@@ -6857,7 +7165,7 @@ def draw_portal4_menu_popup(
             ButtonState(
                 button_id="PMD_HOTAS_D8_NEXT",
                 button_type=ButtonType.PAGE_ACCESS,
-                text="NEXT>" if hotas_page == 0 else "<PREV",
+                text="NEXT>",
                 flash_until_ms=item_flash_until.get("PMD_HOTAS_D8_NEXT", 0),
             ),
         )
@@ -6902,6 +7210,12 @@ def draw_portal4_menu_popup(
         wrapped = _pmd_wrap_text(title, 22, 3)
         for idx, line in enumerate(wrapped[:3]):
             draw_line(title_box, idx + 1, line, (0, 255, 0), False)
+        if action == "mngmt":
+            try:
+                mngmt_pos = max(0, min(15, int(pmd_dr_state.get("hotas_mngmt_rotary_pos", 0))))
+            except Exception:
+                mngmt_pos = 0
+            draw_line(title_box, 2, f"POS {mngmt_pos + 1:02d}/16", (255, 255, 255), False)
 
         dev_box = merge_cells("A4", "B4")
         zones["PMD_HOTAS_BIND_DEVICE"] = dev_box
@@ -9451,6 +9765,7 @@ def draw_portal(
     now_ms: int,
     eng_popup_active: bool = False,
     poi_portal_index: int = 0,
+    poi_sub_index: int = -1,
     poi_on_screen: bool = True,
 ) -> Tuple[List[OsbZone], List[ControlZone], List[SubPortalZone]]:
     osb_zones: List[OsbZone] = []
@@ -9507,7 +9822,9 @@ def draw_portal(
 
     show_poi = False
     if poi_on_screen:
-        if pair_expanded:
+        if int(poi_sub_index) >= 0:
+            show_poi = False
+        elif pair_expanded:
             show_poi = (portal_index == owner_index) and (pair_start <= poi_portal_index <= pair_start + 1)
         else:
             show_poi = portal_index == poi_portal_index
@@ -9601,9 +9918,8 @@ def draw_portal(
             SUB_PORTAL_WIDTH,
             SUB_PORTAL_HEIGHT,
         )
-        if opaque_subportal_bg:
-            screen.fill((0, 0, 0), left_sub)
-            screen.fill((0, 0, 0), right_sub)
+        screen.fill((0, 0, 0), left_sub)
+        screen.fill((0, 0, 0), right_sub)
         pygame.draw.rect(screen, LINE_COLOR, left_sub, 1)
         pygame.draw.rect(screen, LINE_COLOR, right_sub, 1)
         subportal_zones.append(SubPortalZone(portal_index, 0, left_sub))
@@ -9618,6 +9934,8 @@ def draw_portal(
             set_format,
             close_vded,
         )
+        if bool(poi_on_screen) and int(poi_portal_index) == int(portal_index) and int(poi_sub_index) == 0:
+            draw_poi_markers(screen, left_sub)
         render_format(
             screen,
             portal_formats.subs[1],
@@ -9628,6 +9946,8 @@ def draw_portal(
             set_format,
             close_vded,
         )
+        if bool(poi_on_screen) and int(poi_portal_index) == int(portal_index) and int(poi_sub_index) == 1:
+            draw_poi_markers(screen, right_sub)
     elif (not suppress_subportals) and (not pair_expanded) and portal_state.expanded_vertical:
         # Hidden subportals become bottom tabs in 5x7 mode.
         tab_h = max(16, int(0.23 * DPI * 2.0))
@@ -9645,6 +9965,10 @@ def draw_portal(
         draw_tab(side_tab, getattr(portal_formats.subs[1], "name", "SUB2") if portal_formats.subs[1] is not None else "SUB2")
         subportal_zones.append(SubPortalZone(portal_index, 0, center_tab))
         subportal_zones.append(SubPortalZone(portal_index, 1, side_tab))
+        if bool(poi_on_screen) and int(poi_portal_index) == int(portal_index) and int(poi_sub_index) == 0:
+            draw_poi_markers(screen, center_tab)
+        if bool(poi_on_screen) and int(poi_portal_index) == int(portal_index) and int(poi_sub_index) == 1:
+            draw_poi_markers(screen, side_tab)
     elif (not suppress_subportals) and pair_expanded:
         owner = owner_index if owner_index is not None else portal_index
         pair_start_local = pair_start
@@ -9688,9 +10012,9 @@ def draw_portal(
                 tab_defs = [
                     (owner, 0, owner_tab_x[0], getattr(all_portal_formats[owner].subs[0], "name", "SUB1") if all_portal_formats[owner].subs[0] is not None else "SUB1", owner_tab_w),
                     (owner, 1, owner_tab_x[1], getattr(all_portal_formats[owner].subs[1], "name", "SUB2") if all_portal_formats[owner].subs[1] is not None else "SUB2", owner_tab_w),
-                    (adjacent, 0, adj_tab_x[0], getattr(all_portal_formats[adjacent].subs[0], "name", "SUB1") if all_portal_formats[adjacent].subs[0] is not None else "SUB1", adj_tab_w),
+                    (adjacent, 1, adj_tab_x[0], getattr(all_portal_formats[adjacent].subs[1], "name", "SUB2") if all_portal_formats[adjacent].subs[1] is not None else "SUB2", adj_tab_w),
                     (adjacent, -1, adj_tab_x[1], getattr(all_portal_formats[adjacent].primary, "name", "MAIN"), adj_tab_w),
-                    (adjacent, 1, adj_tab_x[2], getattr(all_portal_formats[adjacent].subs[1], "name", "SUB2") if all_portal_formats[adjacent].subs[1] is not None else "SUB2", adj_tab_w),
+                    (adjacent, 0, adj_tab_x[2], getattr(all_portal_formats[adjacent].subs[0], "name", "SUB1") if all_portal_formats[adjacent].subs[0] is not None else "SUB1", adj_tab_w),
                 ]
             else:
                 owner_tab_x = [
@@ -9703,8 +10027,8 @@ def draw_portal(
                     (adj_center + adj_spacing) - adj_tab_w // 2,
                 ]
                 tab_defs = [
-                    (owner, 0, owner_tab_x[0], getattr(all_portal_formats[owner].subs[0], "name", "SUB1") if all_portal_formats[owner].subs[0] is not None else "SUB1", owner_tab_w),
-                    (owner, 1, owner_tab_x[1], getattr(all_portal_formats[owner].subs[1], "name", "SUB2") if all_portal_formats[owner].subs[1] is not None else "SUB2", owner_tab_w),
+                    (owner, 1, owner_tab_x[0], getattr(all_portal_formats[owner].subs[1], "name", "SUB2") if all_portal_formats[owner].subs[1] is not None else "SUB2", owner_tab_w),
+                    (owner, 0, owner_tab_x[1], getattr(all_portal_formats[owner].subs[0], "name", "SUB1") if all_portal_formats[owner].subs[0] is not None else "SUB1", owner_tab_w),
                     (adjacent, 0, adj_tab_x[0], getattr(all_portal_formats[adjacent].subs[0], "name", "SUB1") if all_portal_formats[adjacent].subs[0] is not None else "SUB1", adj_tab_w),
                     (adjacent, -1, adj_tab_x[1], getattr(all_portal_formats[adjacent].primary, "name", "MAIN"), adj_tab_w),
                     (adjacent, 1, adj_tab_x[2], getattr(all_portal_formats[adjacent].subs[1], "name", "SUB2") if all_portal_formats[adjacent].subs[1] is not None else "SUB2", adj_tab_w),
@@ -9714,6 +10038,8 @@ def draw_portal(
                 tr = pygame.Rect(tx, y, tw, tab_h)
                 draw_tab(tr, title)
                 subportal_zones.append(SubPortalZone(p_idx, s_idx, tr))
+                if bool(poi_on_screen) and int(poi_portal_index) == int(p_idx) and int(poi_sub_index) == int(s_idx):
+                    draw_poi_markers(screen, tr)
         else:
             # 10x5 pair: owner side keeps normal two subportals; adjacent side shows 3 equal subportals.
             sub_y = pair_frame.bottom - SUB_PORTAL_HEIGHT
@@ -9729,16 +10055,17 @@ def draw_portal(
                 SUB_PORTAL_WIDTH,
                 SUB_PORTAL_HEIGHT,
             )
-            if opaque_subportal_bg:
-                screen.fill((0, 0, 0), owner_left_sub)
-                screen.fill((0, 0, 0), owner_right_sub)
+            screen.fill((0, 0, 0), owner_left_sub)
+            screen.fill((0, 0, 0), owner_right_sub)
             pygame.draw.rect(screen, LINE_COLOR, owner_left_sub, 1)
             pygame.draw.rect(screen, LINE_COLOR, owner_right_sub, 1)
-            subportal_zones.append(SubPortalZone(owner, 0, owner_left_sub))
-            subportal_zones.append(SubPortalZone(owner, 1, owner_right_sub))
+            owner_left_sub_idx = 0 if owner == pair_start_local else 1
+            owner_right_sub_idx = 1 if owner == pair_start_local else 0
+            subportal_zones.append(SubPortalZone(owner, owner_left_sub_idx, owner_left_sub))
+            subportal_zones.append(SubPortalZone(owner, owner_right_sub_idx, owner_right_sub))
             render_format(
                 screen,
-                all_portal_formats[owner].subs[0],
+                all_portal_formats[owner].subs[owner_left_sub_idx],
                 owner_left_sub,
                 False,
                 owner,
@@ -9746,9 +10073,11 @@ def draw_portal(
                 set_format,
                 close_vded,
             )
+            if bool(poi_on_screen) and int(poi_portal_index) == int(owner) and int(poi_sub_index) == int(owner_left_sub_idx):
+                draw_poi_markers(screen, owner_left_sub)
             render_format(
                 screen,
-                all_portal_formats[owner].subs[1],
+                all_portal_formats[owner].subs[owner_right_sub_idx],
                 owner_right_sub,
                 False,
                 owner,
@@ -9756,19 +10085,27 @@ def draw_portal(
                 set_format,
                 close_vded,
             )
+            if bool(poi_on_screen) and int(poi_portal_index) == int(owner) and int(poi_sub_index) == int(owner_right_sub_idx):
+                draw_poi_markers(screen, owner_right_sub)
 
             adj_col_w = max(1, adj_half.width // 3)
-            adj_defs = [
-                (adjacent, 0, all_portal_formats[adjacent].subs[0]),
-                (adjacent, -1, all_portal_formats[adjacent].primary),
-                (adjacent, 1, all_portal_formats[adjacent].subs[1]),
-            ]
+            if adjacent == pair_start_local:
+                adj_defs = [
+                    (adjacent, 0, all_portal_formats[adjacent].subs[0]),
+                    (adjacent, -1, all_portal_formats[adjacent].primary),
+                    (adjacent, 1, all_portal_formats[adjacent].subs[1]),
+                ]
+            else:
+                adj_defs = [
+                    (adjacent, 1, all_portal_formats[adjacent].subs[1]),
+                    (adjacent, -1, all_portal_formats[adjacent].primary),
+                    (adjacent, 0, all_portal_formats[adjacent].subs[0]),
+                ]
             for idx, (p_idx, s_idx, fmt_obj) in enumerate(adj_defs):
                 cell_x = adj_half.left + idx * adj_col_w
                 cell_w = adj_col_w if idx < 2 else adj_half.right - cell_x
                 cell = pygame.Rect(cell_x, sub_y, cell_w, SUB_PORTAL_HEIGHT)
-                if opaque_subportal_bg:
-                    screen.fill((0, 0, 0), cell)
+                screen.fill((0, 0, 0), cell)
                 pygame.draw.rect(screen, LINE_COLOR, cell, 1)
                 subportal_zones.append(SubPortalZone(p_idx, s_idx, cell))
                 render_format(
@@ -9781,6 +10118,8 @@ def draw_portal(
                     set_format,
                     close_vded,
                 )
+                if bool(poi_on_screen) and int(poi_portal_index) == int(p_idx) and int(poi_sub_index) == int(s_idx):
+                    draw_poi_markers(screen, cell)
 
         # Center divider icons to select collapsed pair size behavior.
         left_state = bool(all_portal_states[pair_start_local].expanded_vertical)
@@ -9831,6 +10170,13 @@ def draw_portal(
             osb_rect = primary_rect
 
     portal_osb = build_osb_zones(osb_rect, portal_index)
+    if portal_formats.primary is not None and hasattr(portal_formats.primary, "adjust_osb_zones"):
+        try:
+            adjusted = portal_formats.primary.adjust_osb_zones(portal_osb, osb_rect, primary_rect)
+            if isinstance(adjusted, list):
+                portal_osb = adjusted
+        except Exception:
+            pass
     osb_zones.extend(portal_osb)
     for zone in portal_osb:
         if zone.label == "T1":
@@ -9978,6 +10324,7 @@ def draw_layout(
     status_menu_popup_portal_index: int,
     active_status_popups_by_portal: Dict[int, str],
     poi_portal_index: int,
+    poi_sub_index: int,
     poi_on_screen: bool,
     plugin_status_menu_buttons: Optional[List[Dict[str, object]]] = None,
 ) -> Tuple[List[OsbZone], List[ControlZone], List[SubPortalZone], Dict[str, pygame.Rect]]:
@@ -10074,6 +10421,7 @@ def draw_layout(
             now_ms,
             eng_popup_active=eng_popup_active,
             poi_portal_index=poi_portal_index,
+            poi_sub_index=poi_sub_index,
             poi_on_screen=poi_on_screen,
         )
         osb_zones.extend(portal_osb)
@@ -10127,6 +10475,13 @@ def draw_layout(
         # Replace target portal OSB click zones with popup zones; make T1 unclickable.
         osb_zones = [z for z in osb_zones if z.portal_index != active_status_popup_portal_index]
         popup_osb = build_osb_zones(popup_portal_rect, active_status_popup_portal_index)
+        if popup_format is not None and hasattr(popup_format, "adjust_osb_zones"):
+            try:
+                adjusted = popup_format.adjust_osb_zones(popup_osb, popup_portal_rect, popup_portal_rect)
+                if isinstance(adjusted, list):
+                    popup_osb = adjusted
+            except Exception:
+                pass
         # Allow popup T1 interaction for submenu-return workflows that explicitly
         # disable the default "open MENU" behavior.
         if popup_t1_opens_menu:
@@ -10229,6 +10584,7 @@ def _migrate_legacy_runtime_writable_data() -> None:
 def main() -> None:
     global _DIST_SECRETS, _DIST_SECRETS_ERROR
     install_console_capture()
+    install_crash_log_hook()
     try:
         # Start runway cache loading as early as possible so TSD has maximum warm-up time.
         formats.prewarm_tsd_background_loads()
@@ -10370,6 +10726,10 @@ def main() -> None:
     _window_surface = _set_mode_windowed(_windowed_size, _window_flags, _windowed_display_index)
     # Logical canvas keeps the legacy 20:8 drawing coordinate space.
     screen = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+    try:
+        formats.EfiFormat._get_aoa_icon(max(10, int(round(0.24 * DPI))), max(8, int(round(0.11 * DPI))))
+    except Exception:
+        pass
     _viewport_rect = pygame.Rect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
     _viewport_scale = 1.0
 
@@ -10628,9 +10988,13 @@ def main() -> None:
     _WINDOWMOVED_EVENT = getattr(pygame, "WINDOWMOVED", -1)
     _JOYAXISMOTION_EVENT = getattr(pygame, "JOYAXISMOTION", -1)
     _JOYBUTTONDOWN_EVENT = getattr(pygame, "JOYBUTTONDOWN", -1)
+    _JOYBUTTONUP_EVENT = getattr(pygame, "JOYBUTTONUP", -1)
     _JOYHATMOTION_EVENT = getattr(pygame, "JOYHATMOTION", -1)
     _JOYDEVICEADDED_EVENT = getattr(pygame, "JOYDEVICEADDED", -1)
     _JOYDEVICEREMOVED_EVENT = getattr(pygame, "JOYDEVICEREMOVED", -1)
+    _WINDOWFOCUSGAINED_EVENT = getattr(pygame, "WINDOWFOCUSGAINED", -1)
+    _WINDOWFOCUSLOST_EVENT = getattr(pygame, "WINDOWFOCUSLOST", -1)
+    _ACTIVEEVENT_EVENT = getattr(pygame, "ACTIVEEVENT", -1)
     _apply_windows_taskbar_icon()
     if launch_fullscreen:
         _set_window_mode(True, preserve_windowed_geometry=True)
@@ -10821,6 +11185,7 @@ def main() -> None:
     ]
     pair_owner: List[Optional[int]] = [None, None]
     poi_portal_index = 0
+    poi_sub_index = -1
     poi_on_screen = True
     vded_states = [VdedState() for _ in range(4)]
     vded_flash_until: Dict[Tuple[int, str], int] = {}
@@ -10854,6 +11219,7 @@ def main() -> None:
     altitude_popup_active = False
     time_popup_active = False
     comm_popup_active = False
+    efi_hotas_popup_active = False
     record_active = False
     record_started = False
     record_accumulated_seconds = 0.0
@@ -10914,14 +11280,19 @@ def main() -> None:
         time_popup_active = name in {"TIME", "WIND"}
 
     def _close_all_status_popups() -> None:
+        nonlocal efi_hotas_popup_active
         _set_status_group_a_popup(None)
         _set_status_group_b_popup(None)
         _set_status_group_c_popup(None)
         _set_status_group_d_popup(None)
+        efi_hotas_popup_active = False
 
     def _close_status_popups_for_portal(portal_index: int) -> None:
+        nonlocal efi_hotas_popup_active
         portals = _status_popup_group_portals(status_bar_swapped)
         target = int(portal_index)
+        if target == 0:
+            efi_hotas_popup_active = False
         if int(portals.get("A", -1)) == target:
             _set_status_group_a_popup(None)
         if int(portals.get("B", -1)) == target:
@@ -10962,6 +11333,8 @@ def main() -> None:
     def _compute_active_status_popups(swapped: bool) -> Dict[int, str]:
         portals = _status_popup_group_portals(swapped)
         popup_by_portal: Dict[int, str] = {}
+        if bool(efi_hotas_popup_active):
+            popup_by_portal[0] = "EFI"
         # One popup can be active per status group, mapping to one portal.
         if eng_popup_active:
             popup_by_portal[portals["A"]] = "ENG"
@@ -11356,8 +11729,6 @@ def main() -> None:
             udp_relay_enabled = False
 
     def sync_panel_text_lites_tint() -> None:
-        global _PANEL_TEXT_LITES_A1_ON, _PANEL_TEXT_LITES_B1_BRT
-        _PANEL_TEXT_LITES_A1_ON = bool(lites_state.get("a1_on", False))
         raw = str(lites_state.get("b1_input", "")).strip()
         if raw.isdigit():
             brt = int(raw)
@@ -11366,7 +11737,7 @@ def main() -> None:
                 brt = int(lites_state.get("b1_brt", 0))
             except Exception:
                 brt = 0
-        _PANEL_TEXT_LITES_B1_BRT = max(0, min(100, brt))
+        set_panel_text_lites_tint(bool(lites_state.get("a1_on", False)), max(0, min(100, brt)))
 
     crus_state: Dict[str, object] = {
         "tos_on": False,
@@ -11519,6 +11890,7 @@ def main() -> None:
     hotas_slew_mode = str(hotas_settings.get("slew_mode", "AXIS")).upper()
     if hotas_slew_mode not in {"AXIS", "HAT"}:
         hotas_slew_mode = "AXIS"
+    hotas_slew_mode = "AXIS"
     hotas_pan_mode = str(hotas_settings.get("pan_mode", "HAT")).upper()
     if hotas_pan_mode not in {"AXIS", "HAT"}:
         hotas_pan_mode = "HAT"
@@ -11565,6 +11937,7 @@ def main() -> None:
         "cesium_token_status": "",
         "keybind_selected": None,
         "keybind_page": 0,
+        "keybind_subpage": "",
         "keybind_inputs": {k: "" for k in PMD_KEYBIND_ACTION_ORDER},
         "keybind_values": {k: str(PMD_KEYBIND_DEFAULT_NAMES.get(k, "")).strip() for k in PMD_KEYBIND_ACTION_ORDER},
         "hotas_slew_mode": hotas_slew_mode,
@@ -11580,6 +11953,7 @@ def main() -> None:
         "hotas_devices": [],
         "hotas_down": {},
         "hotas_axis": {},
+        "hotas_mngmt_rotary_pos": 0,
         "hotas_prev_down": {},
         "hotas_prev_down_raw": {},
         "hotas_prev_key_down": {},
@@ -12291,20 +12665,29 @@ def main() -> None:
         def _safe_plugin_path(relative_path: object, base: Path) -> Path:
             rel = str(relative_path).strip()
             if rel == "":
-                out = base
+                return base
             else:
-                out = (base / rel).resolve()
-            if not str(out).startswith(str(base)):
+                rel_path = Path(rel)
+                if rel_path.is_absolute() or any(part in {"..", ""} for part in rel_path.parts):
+                    raise ValueError("Path escapes plugin sandbox.")
+                out = base.joinpath(rel_path)
+            try:
+                base_cmp = os.path.normcase(os.path.abspath(str(base)))
+                out_cmp = os.path.normcase(os.path.abspath(str(out)))
+            except Exception:
+                base_cmp = str(base)
+                out_cmp = str(out)
+            if out_cmp != base_cmp and not out_cmp.startswith(base_cmp + os.sep):
                 raise ValueError("Path escapes plugin sandbox.")
             return out
 
         def _plugin_read_json(relative_path: object, fallback: Optional[dict] = None) -> dict:
             path = _safe_plugin_path(relative_path, plugin_root)
-            return _safe_read_json(path, fallback)
+            return _cached_plugin_read_json(path, fallback)
 
         def _plugin_write_json(relative_path: object, payload: object) -> bool:
             path = _safe_plugin_path(relative_path, plugin_root)
-            return _safe_write_json(path, payload)
+            return _enqueue_async_json_write(path, payload)
 
         def _plugin_read_text(relative_path: object) -> str:
             path = _safe_plugin_path(relative_path, plugin_root)
@@ -13551,6 +13934,13 @@ def main() -> None:
         pos = visible.index(normalized)
         return visible[(pos + delta) % len(visible)]
 
+    def _clamp_poi_sub_index(value: object) -> int:
+        try:
+            sub = int(value)
+        except Exception:
+            sub = -1
+        return sub if sub in {-1, 0, 1} else -1
+
     def _portal_control_rect(portal_index: int) -> pygame.Rect:
         idx = max(0, min(3, int(portal_index)))
         portal_rect = get_portal_rect(idx)
@@ -13579,6 +13969,64 @@ def main() -> None:
             )
         return portal_rect
 
+    def _poi_target_rect(portal_index: int, sub_index: int) -> pygame.Rect:
+        idx = max(0, min(3, int(portal_index)))
+        sub = _clamp_poi_sub_index(sub_index)
+        if sub < 0:
+            return _portal_control_rect(idx)
+        portal_rect = get_portal_rect(idx)
+        try:
+            suppress_subportals = bool(hasattr(portal_formats[idx].primary, "suppress_subportals") and portal_formats[idx].primary.suppress_subportals())
+        except Exception:
+            suppress_subportals = False
+        pair_idx = idx // 2
+        owner_idx = pair_owner[pair_idx]
+        pair_start = pair_idx * 2
+        if owner_idx is None and (not bool(portal_states[idx].expanded_vertical)) and (not suppress_subportals):
+            sub_y = portal_rect.bottom - SUB_PORTAL_HEIGHT
+            return pygame.Rect(portal_rect.x + (SUB_PORTAL_WIDTH * sub), sub_y, SUB_PORTAL_WIDTH, SUB_PORTAL_HEIGHT)
+        if owner_idx is not None:
+            pair_frame = pygame.Rect(pair_start * PORTAL_WIDTH, ICAWS_HEIGHT, PORTAL_WIDTH * 2, PORTAL_HEIGHT)
+            left_half = pygame.Rect(pair_frame.left, pair_frame.top, pair_frame.width // 2, pair_frame.height)
+            right_half = pygame.Rect(left_half.right, pair_frame.top, pair_frame.width - left_half.width, pair_frame.height)
+            if not bool(portal_states[int(owner_idx)].expanded_vertical):
+                sub_y = pair_frame.bottom - SUB_PORTAL_HEIGHT
+                half = left_half if idx == pair_start else right_half
+                return pygame.Rect(half.left + (SUB_PORTAL_WIDTH * sub), sub_y, SUB_PORTAL_WIDTH, SUB_PORTAL_HEIGHT)
+        # Hidden subportal tab fallback: center the POI on the bottom tab area.
+        tab_h = max(16, int(0.23 * DPI * 2.0))
+        tab_w = max(72, int(1.0 * DPI * 1.5))
+        cy = portal_rect.bottom - tab_h // 2 - 2
+        cx = portal_rect.centerx if sub == 0 else (portal_rect.centerx + (portal_rect.width // 4 if idx in (0, 2) else -(portal_rect.width // 4)))
+        return pygame.Rect(cx - tab_w // 2, cy - tab_h // 2, tab_w, tab_h)
+
+    def _poi_subportal_selectable(portal_index: int, sub_index: int) -> bool:
+        idx = max(0, min(3, int(portal_index)))
+        sub = _clamp_poi_sub_index(sub_index)
+        if sub < 0:
+            return True
+        pair_idx = idx // 2
+        owner_idx = pair_owner[pair_idx] if 0 <= pair_idx < len(pair_owner) else None
+        primary_idx = int(owner_idx) if owner_idx is not None else idx
+        try:
+            suppress = bool(
+                hasattr(portal_formats[primary_idx].primary, "suppress_subportals")
+                and portal_formats[primary_idx].primary.suppress_subportals()
+            )
+        except Exception:
+            suppress = False
+        if suppress:
+            return False
+        if owner_idx is not None:
+            try:
+                return bool(not portal_states[int(owner_idx)].expanded_vertical)
+            except Exception:
+                return False
+        try:
+            return bool(not portal_states[idx].expanded_vertical)
+        except Exception:
+            return False
+
     def _set_hotas_slew_cursor_logical(x: int, y: int, *, make_visible: bool) -> None:
         sx = max(0, min(WINDOW_WIDTH - 1, int(x)))
         sy = max(0, min(WINDOW_HEIGHT - 1, int(y)))
@@ -13591,8 +14039,40 @@ def main() -> None:
             pmd_dr_state["hotas_slew_cursor_last_move_ms"] = 0
 
     def _center_hotas_cursor_on_portal(portal_index: int, *, make_visible: bool) -> None:
-        rect = _portal_control_rect(int(portal_index))
+        rect = _poi_target_rect(int(portal_index), -1)
         _set_hotas_slew_cursor_logical(int(rect.centerx), int(rect.centery), make_visible=make_visible)
+
+    def _center_hotas_cursor_on_poi(*, make_visible: bool) -> None:
+        rect = _poi_target_rect(int(poi_portal_index), int(poi_sub_index))
+        _set_hotas_slew_cursor_logical(int(rect.centerx), int(rect.centery), make_visible=make_visible)
+
+    def _poi_target_format() -> Optional[Tuple[int, int, object, pygame.Rect]]:
+        if phase < 1 or (not bool(poi_on_screen)):
+            return None
+        sub = _clamp_poi_sub_index(poi_sub_index)
+        idx = normalize_poi_index(poi_portal_index) if sub < 0 else int(poi_portal_index)
+        if idx < 0 or idx >= len(portal_formats):
+            return None
+        if sub in {0, 1} and (not _poi_subportal_selectable(idx, sub)):
+            sub = -1
+            idx = normalize_poi_index(idx)
+        if sub in {0, 1}:
+            fmt = portal_formats[idx].subs[sub]
+        else:
+            control_idx = idx
+            try:
+                pair_idx = control_idx // 2
+                if 0 <= pair_idx < len(pair_owner):
+                    owner_idx = pair_owner[pair_idx]
+                    if owner_idx is not None:
+                        control_idx = int(owner_idx)
+            except Exception:
+                control_idx = idx
+            if control_idx < 0 or control_idx >= len(portal_formats):
+                return None
+            idx = int(control_idx)
+            fmt = portal_formats[idx].primary
+        return int(idx), int(sub), fmt, _poi_target_rect(int(idx), int(sub))
 
     def _read_ownship_lat_lon() -> Optional[Tuple[float, float]]:
         lat: Optional[float] = None
@@ -13622,23 +14102,11 @@ def main() -> None:
         return float(lat), float(lon)
 
     def _current_poi_tsd_context() -> Optional[Tuple[int, str, Dict[str, object], pygame.Rect]]:
-        if phase < 1 or (not bool(poi_on_screen)):
+        target = _poi_target_format()
+        if target is None:
             return None
-        poi_idx = normalize_poi_index(poi_portal_index)
-        if poi_idx < 0 or poi_idx >= len(portal_formats):
-            return None
-        control_idx = poi_idx
-        try:
-            pair_idx = control_idx // 2
-            if 0 <= pair_idx < len(pair_owner):
-                owner_idx = pair_owner[pair_idx]
-                if owner_idx is not None:
-                    control_idx = int(owner_idx)
-        except Exception:
-            control_idx = poi_idx
-        if control_idx < 0 or control_idx >= len(portal_formats):
-            return None
-        fmt_name = str(getattr(portal_formats[control_idx].primary, "name", ""))
+        control_idx, _sub_idx, fmt_obj, rect = target
+        fmt_name = str(getattr(fmt_obj, "name", ""))
         tsd_key = _normalize_tsd_name(fmt_name)
         if tsd_key is None:
             return None
@@ -13653,7 +14121,7 @@ def main() -> None:
                 return None
         except Exception:
             pass
-        return int(control_idx), str(tsd_key), tsd_state, _portal_control_rect(int(control_idx))
+        return int(control_idx), str(tsd_key), tsd_state, rect
 
     def _toi_lat_lon_from_cursor(cursor_pos: Tuple[int, int]) -> Optional[Tuple[str, float, float]]:
         ctx = _current_poi_tsd_context()
@@ -13794,7 +14262,7 @@ def main() -> None:
         return 3 - idx
 
     def flip_left_right_layout() -> None:
-        nonlocal portal_formats, portal_states, pair_owner, vded_states, poi_portal_index
+        nonlocal portal_formats, portal_states, pair_owner, vded_states, poi_portal_index, poi_sub_index
         portal_formats = [portal_formats[3], portal_formats[2], portal_formats[1], portal_formats[0]]
         portal_states = [portal_states[3], portal_states[2], portal_states[1], portal_states[0]]
         vded_states = [vded_states[3], vded_states[2], vded_states[1], vded_states[0]]
@@ -13803,7 +14271,8 @@ def main() -> None:
         pair_owner[1] = None if old_pair_owner[0] is None else mirror_portal_index(old_pair_owner[0])
         if poi_on_screen:
             poi_portal_index = mirror_portal_index(poi_portal_index)
-            _center_hotas_cursor_on_portal(poi_portal_index, make_visible=True)
+            poi_sub_index = _clamp_poi_sub_index(poi_sub_index)
+            _center_hotas_cursor_on_poi(make_visible=True)
 
     def rebuild_formats() -> None:
         nonlocal portal_formats, status_formats, cold_start_active
@@ -14102,28 +14571,13 @@ def main() -> None:
         return min(allowed, key=lambda x: (abs(x - v), x))
 
     def _apply_poi_tsd_keyboard_pan_zoom(dt_local: float, popup_name: Optional[str], dbg_overlay: bool) -> None:
-        if phase < 1:
-            return
-        if not bool(poi_on_screen):
-            return
         if dbg_overlay:
             return
-        poi_idx = normalize_poi_index(poi_portal_index)
-        if poi_idx < 0 or poi_idx >= len(portal_formats):
+        target = _poi_target_format()
+        if target is None:
             return
-        control_idx = poi_idx
-        try:
-            pair_idx = control_idx // 2
-            if 0 <= pair_idx < len(pair_owner):
-                owner_idx = pair_owner[pair_idx]
-                if owner_idx is not None:
-                    control_idx = int(owner_idx)
-        except Exception:
-            control_idx = poi_idx
-        if control_idx < 0 or control_idx >= len(portal_formats):
-            return
-        primary = portal_formats[control_idx].primary
-        fmt_name = str(getattr(primary, "name", ""))
+        control_idx, _sub_idx, fmt_obj, _target_rect = target
+        fmt_name = str(getattr(fmt_obj, "name", ""))
         tsd_key = _normalize_tsd_name(fmt_name)
         if tsd_key is None:
             return
@@ -14211,8 +14665,8 @@ def main() -> None:
         zoom_scale = float(old_zoom_scale)
         max_zoom_scale = max(1.0, float(base_range_nm) / 0.01)
         # Requested control mapping: CZOOM+ zooms in, CZOOM- zooms out.
-        zoom_in = _is_action_down("czoom_plus")
-        zoom_out = _is_action_down("czoom_minus")
+        zoom_in = _is_action_down("czoom_plus") or _is_action_down("fov_up")
+        zoom_out = _is_action_down("czoom_minus") or _is_action_down("fov_down")
         if zoom_in and (not zoom_out):
             zoom_scale *= math.exp(2.4 * dt_s)
         elif zoom_out and (not zoom_in):
@@ -14296,10 +14750,24 @@ def main() -> None:
             pan_rate_px_s = 220.0
             pan_dx = 0.0
             pan_dy = 0.0
-            pan_left = _is_action_down("curs_lt") or _is_action_down("pan_left")
-            pan_right = _is_action_down("curs_rt") or _is_action_down("pan_right")
-            pan_up = _is_action_down("curs_up") or _is_action_down("pan_up")
-            pan_down = _is_action_down("curs_dn") or _is_action_down("pan_down")
+            pan_left = _is_action_down("curs_lt") or _is_action_down("pan_left") or _is_action_down("slew_left")
+            pan_right = _is_action_down("curs_rt") or _is_action_down("pan_right") or _is_action_down("slew_right")
+            pan_up = _is_action_down("curs_up") or _is_action_down("pan_up") or _is_action_down("slew_up")
+            pan_down = _is_action_down("curs_dn") or _is_action_down("pan_down") or _is_action_down("slew_down")
+            slew_axis_x = 0.0
+            slew_axis_y = 0.0
+            try:
+                axis_map = pmd_dr_state.get("hotas_axis", {})
+                if not isinstance(axis_map, dict):
+                    axis_map = {}
+                dead = 0.2
+                lr = float(axis_map.get("slew_lr", 0.0) or 0.0)
+                ud = float(axis_map.get("slew_ud", 0.0) or 0.0)
+                slew_axis_x = lr if abs(lr) >= dead else 0.0
+                slew_axis_y = ud if abs(ud) >= dead else 0.0
+            except Exception:
+                slew_axis_x = 0.0
+                slew_axis_y = 0.0
             hotas_down_raw = pmd_dr_state.get("hotas_down", {})
             hotas_down = hotas_down_raw if isinstance(hotas_down_raw, dict) else {}
             hotas_pan_active = bool(
@@ -14307,6 +14775,8 @@ def main() -> None:
                 or hotas_down.get("pan_right", False)
                 or hotas_down.get("pan_up", False)
                 or hotas_down.get("pan_down", False)
+                or abs(slew_axis_x) > 1e-6
+                or abs(slew_axis_y) > 1e-6
             )
             if hotas_pan_active:
                 try:
@@ -14323,6 +14793,12 @@ def main() -> None:
                 pan_dy += pan_rate_px_s * dt_s
             elif pan_down and (not pan_up):
                 pan_dy -= pan_rate_px_s * dt_s
+            if abs(slew_axis_x) > 1e-6:
+                # Negative X is left, matching the discrete SLEW LEFT mapping.
+                pan_dx += -float(slew_axis_x) * pan_rate_px_s * dt_s
+            if abs(slew_axis_y) > 1e-6:
+                # Negative Y is up for SDL-style stick axes.
+                pan_dy += -float(slew_axis_y) * pan_rate_px_s * dt_s
             pan_x += pan_dx
             pan_y += pan_dy
 
@@ -14393,27 +14869,12 @@ def main() -> None:
             tsd_state["kbd_pan_y_px"] = float(pan_y)
 
     def _apply_poi_asr_keyboard_pan_zoom(dt_local: float, dbg_overlay: bool) -> None:
-        if phase < 1:
-            return
-        if not bool(poi_on_screen):
-            return
         if dbg_overlay:
             return
-        poi_idx = normalize_poi_index(poi_portal_index)
-        if poi_idx < 0 or poi_idx >= len(portal_formats):
+        target = _poi_target_format()
+        if target is None:
             return
-        control_idx = poi_idx
-        try:
-            pair_idx = control_idx // 2
-            if 0 <= pair_idx < len(pair_owner):
-                owner_idx = pair_owner[pair_idx]
-                if owner_idx is not None:
-                    control_idx = int(owner_idx)
-        except Exception:
-            control_idx = poi_idx
-        if control_idx < 0 or control_idx >= len(portal_formats):
-            return
-        fmt = portal_formats[control_idx].primary
+        _control_idx, _sub_idx, fmt, _target_rect = target
         if str(getattr(fmt, "name", "")).upper().strip() != "ASR1":
             return
         if not hasattr(fmt, "apply_keyboard_pan_zoom"):
@@ -14432,12 +14893,29 @@ def main() -> None:
             except Exception:
                 return False
 
-        zoom_in = _is_action_down("czoom_plus")
-        zoom_out = _is_action_down("czoom_minus")
-        pan_left = _is_action_down("curs_lt") or _is_action_down("pan_left")
-        pan_right = _is_action_down("curs_rt") or _is_action_down("pan_right")
-        pan_up = _is_action_down("curs_up") or _is_action_down("pan_up")
-        pan_down = _is_action_down("curs_dn") or _is_action_down("pan_down")
+        zoom_in = _is_action_down("czoom_plus") or _is_action_down("fov_up")
+        zoom_out = _is_action_down("czoom_minus") or _is_action_down("fov_down")
+        pan_left = _is_action_down("curs_lt") or _is_action_down("pan_left") or _is_action_down("slew_left")
+        pan_right = _is_action_down("curs_rt") or _is_action_down("pan_right") or _is_action_down("slew_right")
+        pan_up = _is_action_down("curs_up") or _is_action_down("pan_up") or _is_action_down("slew_up")
+        pan_down = _is_action_down("curs_dn") or _is_action_down("pan_down") or _is_action_down("slew_down")
+        try:
+            axis_map = pmd_dr_state.get("hotas_axis", {})
+            if not isinstance(axis_map, dict):
+                axis_map = {}
+            dead = 0.2
+            lr = float(axis_map.get("slew_lr", 0.0) or 0.0)
+            ud = float(axis_map.get("slew_ud", 0.0) or 0.0)
+            if lr <= -dead:
+                pan_left = True
+            elif lr >= dead:
+                pan_right = True
+            if ud <= -dead:
+                pan_up = True
+            elif ud >= dead:
+                pan_down = True
+        except Exception:
+            pass
         try:
             fmt.apply_keyboard_pan_zoom(
                 dt_s,
@@ -14452,27 +14930,12 @@ def main() -> None:
             pass
 
     def _apply_poi_tflir_keyboard_slew(dt_local: float, dbg_overlay: bool) -> None:
-        if phase < 1:
-            return
-        if not bool(poi_on_screen):
-            return
         if dbg_overlay:
             return
-        poi_idx = normalize_poi_index(poi_portal_index)
-        if poi_idx < 0 or poi_idx >= len(portal_formats):
+        target = _poi_target_format()
+        if target is None:
             return
-        control_idx = poi_idx
-        try:
-            pair_idx = control_idx // 2
-            if 0 <= pair_idx < len(pair_owner):
-                owner_idx = pair_owner[pair_idx]
-                if owner_idx is not None:
-                    control_idx = int(owner_idx)
-        except Exception:
-            control_idx = poi_idx
-        if control_idx < 0 or control_idx >= len(portal_formats):
-            return
-        fmt = portal_formats[control_idx].primary
+        _control_idx, _sub_idx, fmt, _target_rect = target
         if str(getattr(fmt, "name", "")).upper().strip() != "TFLIR":
             return
 
@@ -14573,8 +15036,8 @@ def main() -> None:
             y_cmd = 0.0
             slew_active = False
 
-        zoom_in = _is_action_down("czoom_plus")
-        zoom_out = _is_action_down("czoom_minus")
+        zoom_in = _is_action_down("czoom_plus") or _is_action_down("fov_up")
+        zoom_out = _is_action_down("czoom_minus") or _is_action_down("fov_down")
         if zoom_in and (not zoom_out):
             zoom_fov_deg *= math.exp(-1.75 * dt_s)
         elif zoom_out and (not zoom_in):
@@ -19791,6 +20254,8 @@ def main() -> None:
             state["hrc_events"] = {}
         if not isinstance(state.get("fna_events", {}), dict):
             state["fna_events"] = {}
+        if not isinstance(state.get("bit_runs", {}), dict):
+            state["bit_runs"] = {}
         return state
 
     def _update_on_off_and_phm_runtime(now_ms: int) -> None:
@@ -20127,6 +20592,92 @@ def main() -> None:
         }
 
         phm_state = _ensure_phm_status_debug_state()
+        def _resolve_completed_phm_status_bits() -> None:
+            bit_runs_raw = phm_state.get("bit_runs", {})
+            if not isinstance(bit_runs_raw, dict):
+                phm_state["bit_runs"] = {}
+                return
+            hrc_events = phm_state.get("hrc_events", {})
+            if not isinstance(hrc_events, dict):
+                hrc_events = {}
+                phm_state["hrc_events"] = hrc_events
+            catalog = getattr(formats, "ICAWS_ALERT_CATALOG", {})
+            chooser = getattr(formats, "_choose_random_icaw_hrc", None)
+            if not isinstance(catalog, dict):
+                catalog = {}
+            remaining_runs: Dict[str, object] = {}
+            for run_key, run in list(bit_runs_raw.items()):
+                if not isinstance(run, dict):
+                    continue
+                try:
+                    end_ms = int(run.get("end_ms", 0))
+                except Exception:
+                    end_ms = 0
+                if end_ms > int(now_ms):
+                    remaining_runs[str(run_key)] = dict(run)
+                    continue
+
+                target = str(run.get("target", run_key)).upper().strip()
+                system = str(run.get("system", "")).upper().strip()
+                subsystem = str(run.get("subsystem", target)).upper().strip()
+                match_keys = {target, subsystem}
+                match_keys = {k for k in match_keys if k != ""}
+                candidates: List[Tuple[str, str]] = []
+                for entry in catalog.values():
+                    if not isinstance(entry, dict):
+                        continue
+                    rules = entry.get("hrc_rules", [])
+                    if not isinstance(rules, list) or len(rules) <= 0:
+                        continue
+                    target_keys_raw = entry.get("target_keys", [])
+                    target_keys = {
+                        str(x).upper().strip()
+                        for x in target_keys_raw
+                        if str(x).strip() != ""
+                    } if isinstance(target_keys_raw, list) else set()
+                    entry_system = str(entry.get("target_system", entry.get("system", ""))).upper().strip()
+                    if not (match_keys & target_keys) and not (target in {entry_system, system} and len(target_keys) > 0):
+                        continue
+                    hrc_value = ""
+                    try:
+                        if callable(chooser):
+                            hrc_value = str(chooser(rules)).strip()
+                    except Exception:
+                        hrc_value = ""
+                    if hrc_value == "":
+                        for rule in rules:
+                            if not isinstance(rule, dict):
+                                continue
+                            hrcs = rule.get("hrcs", [])
+                            if isinstance(hrcs, list) and len(hrcs) > 0:
+                                hrc_value = str(random.choice(hrcs)).strip()
+                                break
+                    if hrc_value != "":
+                        candidates.append((target, hrc_value))
+
+                random.shuffle(candidates)
+                triggered: List[Tuple[str, str]] = []
+                for target_key, hrc_value in candidates:
+                    # BITs usually pass; HRCs should be occasional.
+                    if random.random() > 0.06:
+                        continue
+                    triggered.append((target_key, hrc_value))
+                    if len(triggered) >= 2:
+                        break
+                for target_key, hrc_value in triggered:
+                    vals = hrc_events.get(target_key, [])
+                    if not isinstance(vals, list):
+                        vals = []
+                    if hrc_value not in vals:
+                        vals.append(hrc_value)
+                    hrc_events[target_key] = [str(x) for x in vals if str(x).strip() != ""]
+                if len(triggered) > 0:
+                    print(f"[PHM][BIT] {target} complete: HRC triggered {[h for _, h in triggered]}")
+                else:
+                    print(f"[PHM][BIT] {target} complete: OK")
+            phm_state["bit_runs"] = remaining_runs
+
+        _resolve_completed_phm_status_bits()
         bit_map_raw = phm_state.get("bit_until_ms", {})
         bit_map: Dict[str, int] = {}
         if isinstance(bit_map_raw, dict):
@@ -20142,20 +20693,20 @@ def main() -> None:
         def _force_bit_system(name: str) -> None:
             key = str(name).upper().strip()
             if key in mission_system_status:
-                mission_system_status[key] = "BIT"
+                mission_system_status[key] = "TS"
 
         def _force_bit_subsystem(name: str) -> None:
             key = str(name).upper().strip()
-            if key in runtime_subsystem_status:
-                runtime_subsystem_status[key] = "BIT"
+            if key != "":
+                runtime_subsystem_status[key] = "TS"
 
         for bit_key in list(bit_map.keys()):
             _force_bit_system(bit_key)
             _force_bit_subsystem(bit_key)
-        if str(runtime_subsystem_status.get("CNI", "")).upper() == "BIT":
+        if str(runtime_subsystem_status.get("CNI", "")).upper() == "TS":
             cni_page_phase = "BIT"
-            mission_system_status["COM_NAV"] = "BIT"
-            runtime_subsystem_status["PSCTS"] = "BIT"
+            mission_system_status["COM_NAV"] = "TS"
+            runtime_subsystem_status["PSCTS"] = "TS"
 
         cni_status = str(runtime_subsystem_status.get("CNI", cni_status)).upper().strip() or cni_status
 
@@ -21600,6 +22151,9 @@ def main() -> None:
             "poi_rt": ("poi_right",),
             "poi_up": ("poi_up",),
             "poi_dn": ("poi_down",),
+            "com_a": ("comm_ctl_left",),
+            "com_b": ("comm_ctl_right",),
+            "com_c": ("comm_ctl_aft",),
         }
         if bool(hotas_raw_down.get(action_key, False)):
             return True
@@ -21624,6 +22178,15 @@ def main() -> None:
             return False
         return key_code in set(_pmd_action_key_codes(action))
 
+    def _pmd_event_matches_landing_gear(event_key: object) -> bool:
+        try:
+            key_code = int(event_key)
+        except Exception:
+            return False
+        # Keep the hard default as a fallback so gear remains usable if a
+        # saved keybind is missing or stale after settings migrations.
+        return bool(key_code == pygame.K_g or _pmd_event_matches_action(key_code, "ldg_gear"))
+
     def _pmd_is_hold_action_key(event_key: object) -> bool:
         hold_actions = (
             "elev_up",
@@ -21632,16 +22195,9 @@ def main() -> None:
             "ail_right",
             "rud_left",
             "rud_right",
-            "czoom_minus",
-            "pan_left",
-            "pan_up",
-            "pan_down",
-            "czoom_plus",
-            "pan_right",
             "throt_plus",
             "throt_minus",
-            "poi_plus",
-            "poi_minus",
+            "ipp_run",
             "engine_run",
             "gun_trigger",
             "pickle",
@@ -21649,6 +22205,55 @@ def main() -> None:
             "tx",
             "brake",
             "ldg_gear",
+            "wpn_sel",
+            "disconnect",
+            "nws",
+            "tms_up",
+            "tms_down",
+            "tms_left",
+            "tms_right",
+            "dms_up",
+            "dms_down",
+            "dms_left",
+            "dms_right",
+            "fov_up",
+            "fov_down",
+            "fov_left",
+            "fov_right",
+            "cms_up",
+            "cms_down",
+            "cms_left",
+            "cms_right",
+            "mngmt_z",
+            "mngmt_up",
+            "mngmt_down",
+            "wms_z",
+            "wms_fwd",
+            "wms_aft",
+            "wms_left",
+            "wms_right",
+            "slew_z",
+            "slew_fwd",
+            "slew_aft",
+            "slew_left",
+            "slew_right",
+            "comm_ctl_z",
+            "comm_ctl_fwd",
+            "comm_ctl_aft",
+            "comm_ctl_left",
+            "comm_ctl_right",
+            "cage_uncage",
+            "mpo",
+            "pol_ctrl",
+            "aprch_pwr_comp",
+            "cffl_z",
+            "cffl_fwd",
+            "cffl_aft",
+            "spd_brk_fwd",
+            "spd_brk_aft",
+            "spd_hold_z",
+            "spd_hold_up",
+            "spd_hold_down",
         )
         return any(_pmd_event_matches_action(event_key, action) for action in hold_actions)
 
@@ -21836,6 +22441,21 @@ def main() -> None:
         devices = devices_raw if isinstance(devices_raw, list) else []
 
         if saved_guid != "" or saved_name != "":
+            if saved_idx in hotas_joysticks:
+                for dev_raw in devices:
+                    dev = dev_raw if isinstance(dev_raw, dict) else {}
+                    try:
+                        dev_idx = int(dev.get("index", -1))
+                    except Exception:
+                        dev_idx = -1
+                    if dev_idx != saved_idx:
+                        continue
+                    dev_guid = str(dev.get("guid", "") or "").strip().lower()
+                    dev_name = str(dev.get("name", "") or "").strip().lower()
+                    guid_ok = bool(saved_guid != "" and dev_guid != "" and dev_guid == saved_guid)
+                    name_ok = bool(saved_name != "" and dev_name != "" and dev_name == saved_name)
+                    if guid_ok or name_ok:
+                        return int(saved_idx)
             for dev_raw in devices:
                 dev = dev_raw if isinstance(dev_raw, dict) else {}
                 try:
@@ -22136,9 +22756,13 @@ def main() -> None:
             next_refresh_ms = int(pmd_dr_state.get("hotas_refresh_next_ms", 0))
         except Exception:
             next_refresh_ms = 0
-        if now_ms >= next_refresh_ms or len(hotas_joysticks) <= 0:
+        if now_ms >= next_refresh_ms:
             _hotas_refresh_devices()
-            pmd_dr_state["hotas_refresh_next_ms"] = int(now_ms + 750)
+            # Device enumeration can stall SDL/DirectInput briefly. Do not
+            # poll it every frame when no HOTAS is present; device add/remove
+            # events still force an immediate refresh.
+            retry_ms = 5000 if len(hotas_joysticks) <= 0 else 10000
+            pmd_dr_state["hotas_refresh_next_ms"] = int(now_ms + retry_ms)
         bindings = _hotas_bindings_dict()
         try:
             key_focus = bool(pygame.key.get_focused())
@@ -22185,6 +22809,12 @@ def main() -> None:
                     down_raw[action] = bool(_hotas_is_binding_down(binding))
                 else:
                     down_raw[action] = bool(prev_down_map.get(action, False))
+        event_override_raw = pmd_dr_state.get("hotas_event_down_override", {})
+        event_override = event_override_raw if isinstance(event_override_raw, dict) else {}
+        for action_name, down_value in event_override.items():
+            action_key = str(action_name).strip().lower()
+            if action_key in HOTAS_ACTION_ORDER:
+                down_raw[action_key] = bool(down_value)
         action_down: Dict[str, bool] = {}
         # Map HOTAS cursor/zoom into existing keybind action names.
         action_down["czoom_plus"] = bool(down_raw.get("zoom_plus", False))
@@ -22278,8 +22908,12 @@ def main() -> None:
                 pmd_dr_state["hotas_edit_device_auto_lock"] = int(best_idx)
                 pmd_dr_state["hotas_edit_device_auto_lock_until_ms"] = int(now_ms + 1200)
 
+    def _command_landing_gear_input(source: str) -> None:
+        print(f"[GEAR][INPUT] source={source}")
+        _set_console_left_panel_control("GEAR", 1, True)
+
     def _hotas_apply_edge_actions(dbg_overlay_active: bool, dt_local: float) -> None:
-        nonlocal cockpit_panels_page_index, poi_portal_index, poi_on_screen
+        nonlocal cockpit_panels_page_index, poi_portal_index, poi_sub_index, poi_on_screen, system_mode, efi_hotas_popup_active
         raw_now = pmd_dr_state.get("hotas_action_down_raw", {})
         hotas_now_map = dict(raw_now) if isinstance(raw_now, dict) else {}
 
@@ -22291,7 +22925,8 @@ def main() -> None:
 
         key_now_map: Dict[str, bool] = {}
         now_map: Dict[str, bool] = {}
-        for action_name in HOTAS_ACTION_ORDER:
+        runtime_action_order = list(dict.fromkeys(list(HOTAS_ACTION_ORDER) + list(PMD_KEYBIND_ACTION_ORDER)))
+        for action_name in runtime_action_order:
             down_hotas = bool(hotas_now_map.get(action_name, False))
             down_key = bool(_keyboard_action_down(action_name))
             key_now_map[action_name] = bool(down_key)
@@ -22307,6 +22942,44 @@ def main() -> None:
             hotas_rising = bool(hotas_now_map.get(action_key, False)) and (not bool(prev_raw_map.get(action_key, False)))
             key_rising = bool(key_now_map.get(action_key, False)) and (not bool(key_prev_map.get(action_key, False)))
             return bool(hotas_rising or key_rising)
+
+        def _single_press(action: str, state_key: str) -> bool:
+            action_key = str(action).strip().lower()
+            down = bool(now_map.get(action_key, False))
+            prev_down = bool(pmd_dr_state.get(state_key, False))
+            pmd_dr_state[state_key] = bool(down)
+            return bool(down and not prev_down)
+
+        def _command_landing_gear(source: str) -> None:
+            _command_landing_gear_input(source)
+
+        def _mngmt_rotary_pos() -> int:
+            try:
+                return max(0, min(15, int(pmd_dr_state.get("hotas_mngmt_rotary_pos", 0))))
+            except Exception:
+                return 0
+
+        mngmt_scroll_delta = 0
+        axis_raw_for_mngmt = pmd_dr_state.get("hotas_axis", {})
+        axis_map_for_mngmt = axis_raw_for_mngmt if isinstance(axis_raw_for_mngmt, dict) else {}
+        prev_mngmt_pos = _mngmt_rotary_pos()
+        if "mngmt" in axis_map_for_mngmt:
+            try:
+                mngmt_axis = float(axis_map_for_mngmt.get("mngmt", 0.0))
+            except Exception:
+                mngmt_axis = 0.0
+            mngmt_axis = max(-1.0, min(1.0, mngmt_axis))
+            rotary_pos = int(((mngmt_axis + 1.0) * 0.5) * 16.0)
+            next_mngmt_pos = max(0, min(15, rotary_pos))
+            pmd_dr_state["hotas_mngmt_rotary_pos"] = next_mngmt_pos
+            if next_mngmt_pos != prev_mngmt_pos:
+                mngmt_scroll_delta = 1 if next_mngmt_pos > prev_mngmt_pos else -1
+        elif _rising("mngmt_up"):
+            pmd_dr_state["hotas_mngmt_rotary_pos"] = (_mngmt_rotary_pos() + 1) % 16
+            mngmt_scroll_delta = -1
+        elif _rising("mngmt_down"):
+            pmd_dr_state["hotas_mngmt_rotary_pos"] = (_mngmt_rotary_pos() - 1) % 16
+            mngmt_scroll_delta = 1
 
         def _read_slew_cursor_pos() -> Tuple[int, int]:
             raw_pos = pmd_dr_state.get("hotas_slew_cursor_logical", (WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
@@ -22324,11 +22997,19 @@ def main() -> None:
             cy = max(0, min(WINDOW_HEIGHT - 1, cy))
             return cx, cy
 
-        # SLEW now drives a global screen cursor (not TSD pan, not OS mouse).
-        dt_s = max(0.0, float(dt_local))
-        if dt_s > 0.0:
-            slew_x = 0.0
-            slew_y = 0.0
+        def _poi_format_consumes_slew_input() -> bool:
+            target = _poi_target_format()
+            if target is None:
+                return False
+            try:
+                fmt_name = str(getattr(target[2], "name", "")).upper().strip()
+            except Exception:
+                fmt_name = ""
+            return bool(_normalize_tsd_name(fmt_name) is not None or fmt_name in {"ASR1", "TFLIR"})
+
+        def _read_slew_input_vector() -> Tuple[float, float]:
+            slew_x_local = 0.0
+            slew_y_local = 0.0
             if _hotas_current_slew_mode() == "AXIS":
                 axis_raw = pmd_dr_state.get("hotas_axis", {})
                 axis_map = axis_raw if isinstance(axis_raw, dict) else {}
@@ -22341,14 +23022,21 @@ def main() -> None:
                 except Exception:
                     ud = 0.0
                 dead = 0.2
-                slew_x = lr if abs(lr) >= dead else 0.0
-                slew_y = ud if abs(ud) >= dead else 0.0
+                slew_x_local = lr if abs(lr) >= dead else 0.0
+                slew_y_local = ud if abs(ud) >= dead else 0.0
             else:
-                slew_x = float(int(bool(now_map.get("slew_right", False))) - int(bool(now_map.get("slew_left", False))))
-                slew_y = float(int(bool(now_map.get("slew_down", False))) - int(bool(now_map.get("slew_up", False))))
+                slew_x_local = float(int(bool(now_map.get("slew_right", False))) - int(bool(now_map.get("slew_left", False))))
+                slew_y_local = float(int(bool(now_map.get("slew_down", False))) - int(bool(now_map.get("slew_up", False))))
+            return float(slew_x_local), float(slew_y_local)
 
+        # SLEW drives the active POI sensor/display when applicable; otherwise it moves
+        # the global screen cursor for HOTAS virtual clicks.
+        dt_s = max(0.0, float(dt_local))
+        if dt_s > 0.0:
+            slew_x, slew_y = _read_slew_input_vector()
+            poi_consumes_slew = _poi_format_consumes_slew_input()
             curr_x, curr_y = _read_slew_cursor_pos()
-            if abs(slew_x) > 1e-6 or abs(slew_y) > 1e-6:
+            if (not poi_consumes_slew) and (abs(slew_x) > 1e-6 or abs(slew_y) > 1e-6):
                 try:
                     slew_speed_scalar = float(pmd_dr_state.get("hotas_slew_speed", 1.0))
                 except Exception:
@@ -22362,7 +23050,9 @@ def main() -> None:
                 pmd_dr_state["hotas_slew_cursor_logical"] = (next_x, next_y)
             else:
                 pmd_dr_state["hotas_slew_cursor_logical"] = (curr_x, curr_y)
-            if abs(slew_x) > 1e-6 or abs(slew_y) > 1e-6:
+            if poi_consumes_slew and (abs(slew_x) > 1e-6 or abs(slew_y) > 1e-6):
+                pmd_dr_state["hotas_slew_cursor_visible"] = False
+            elif abs(slew_x) > 1e-6 or abs(slew_y) > 1e-6:
                 try:
                     pmd_dr_state["hotas_slew_cursor_last_move_ms"] = int(pygame.time.get_ticks())
                 except Exception:
@@ -22398,51 +23088,107 @@ def main() -> None:
                     return int(portal_idx)
             return None
 
-        if _rising("poi_left"):
+        def _poi_sequence() -> List[Tuple[int, int]]:
+            seq: List[Tuple[int, int]] = []
+            for idx in range(4):
+                seq.append((idx, -1))
+                if _poi_subportal_selectable(idx, 0):
+                    seq.append((idx, 0))
+                if _poi_subportal_selectable(idx, 1):
+                    seq.append((idx, 1))
+            return seq if len(seq) > 0 else [(0, -1)]
+
+        def _poi_target_under_pos(pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+            x = int(pos[0])
+            y = int(pos[1])
+            seq = _poi_sequence()
+            for portal_idx, sub_idx in [item for item in seq if int(item[1]) >= 0]:
+                if _poi_target_rect(int(portal_idx), int(sub_idx)).collidepoint(x, y):
+                    return int(portal_idx), int(sub_idx)
+            for portal_idx, sub_idx in [item for item in seq if int(item[1]) < 0]:
+                if _poi_target_rect(int(portal_idx), int(sub_idx)).collidepoint(x, y):
+                    return int(portal_idx), int(sub_idx)
+            return None
+
+        def _set_poi_target(portal_idx: int, sub_idx: int) -> None:
+            nonlocal poi_portal_index, poi_sub_index, poi_on_screen
+            poi_portal_index = max(0, min(3, int(portal_idx)))
+            poi_sub_index = _clamp_poi_sub_index(sub_idx)
+            poi_on_screen = True
+            _center_hotas_cursor_on_poi(make_visible=True)
+
+        def _step_poi_target(delta: int) -> None:
+            seq = _poi_sequence()
+            curr = (int(poi_portal_index), _clamp_poi_sub_index(poi_sub_index))
+            if curr not in seq:
+                curr = (normalize_poi_index(int(poi_portal_index)), -1)
+            try:
+                pos = seq.index(curr)
+            except Exception:
+                pos = 0
+            nxt = seq[(pos + int(delta)) % len(seq)]
+            _set_poi_target(nxt[0], nxt[1])
+
+        def _poi_to_subportal_or_main(target_sub: int) -> None:
+            curr_sub = _clamp_poi_sub_index(poi_sub_index)
+            if target_sub < 0:
+                if curr_sub >= 0:
+                    _set_poi_target(poi_portal_index, -1)
+            elif curr_sub < 0:
+                if _poi_subportal_selectable(poi_portal_index, 0):
+                    _set_poi_target(poi_portal_index, 0)
+
+        dms_dir = ""
+        if bool(now_map.get("poi_left", False)) or bool(now_map.get("dms_left", False)):
+            dms_dir = "left"
+        elif bool(now_map.get("poi_right", False)) or bool(now_map.get("dms_right", False)):
+            dms_dir = "right"
+        elif bool(now_map.get("poi_up", False)) or bool(now_map.get("dms_up", False)):
+            dms_dir = "up"
+        elif bool(now_map.get("poi_down", False)) or bool(now_map.get("dms_down", False)):
+            dms_dir = "down"
+        try:
+            prev_dms_dir = str(pmd_dr_state.get("hotas_dms_poi_prev_dir", "") or "")
+        except Exception:
+            prev_dms_dir = ""
+        dms_edge_dir = dms_dir if dms_dir != "" and dms_dir != prev_dms_dir else ""
+        pmd_dr_state["hotas_dms_poi_prev_dir"] = str(dms_dir)
+
+        if dms_edge_dir == "left":
             if dbg_overlay_active:
                 total = max(1, len(_discover_panel_pages()))
                 cockpit_panels_page_index = (cockpit_panels_page_index - 1) % total
             elif phase >= 1 and poi_on_screen:
-                poi_portal_index = step_poi_index(poi_portal_index, -1)
-                _center_hotas_cursor_on_portal(poi_portal_index, make_visible=True)
-        if _rising("poi_right"):
+                _step_poi_target(-1)
+        if dms_edge_dir == "right":
             if dbg_overlay_active:
                 total = max(1, len(_discover_panel_pages()))
                 cockpit_panels_page_index = (cockpit_panels_page_index + 1) % total
             elif phase >= 1 and poi_on_screen:
-                poi_portal_index = step_poi_index(poi_portal_index, 1)
-                _center_hotas_cursor_on_portal(poi_portal_index, make_visible=True)
-        if _rising("poi_up") and phase >= 1:
-            poi_on_screen = False
-        if _rising("poi_down") and phase >= 1:
-            poi_on_screen = True
-            _center_hotas_cursor_on_portal(poi_portal_index, make_visible=True)
+                _step_poi_target(1)
+        if dms_edge_dir == "up" and phase >= 1:
+            _poi_to_subportal_or_main(-1)
+        if dms_edge_dir == "down" and phase >= 1:
+            _poi_to_subportal_or_main(0)
 
         def _poi_control_portal_index() -> Optional[int]:
-            if phase < 1 or (not bool(poi_on_screen)):
+            target = _poi_target_format()
+            if target is None:
                 return None
-            poi_idx = normalize_poi_index(poi_portal_index)
-            if poi_idx < 0 or poi_idx >= len(portal_formats):
+            return int(target[0])
+
+        def _poi_format_obj() -> Optional[Tuple[int, int, object]]:
+            target = _poi_target_format()
+            if target is None:
                 return None
-            control_idx = poi_idx
-            try:
-                pair_idx = control_idx // 2
-                if 0 <= pair_idx < len(pair_owner):
-                    owner_idx = pair_owner[pair_idx]
-                    if owner_idx is not None:
-                        control_idx = int(owner_idx)
-            except Exception:
-                control_idx = poi_idx
-            if control_idx < 0 or control_idx >= len(portal_formats):
-                return None
-            return int(control_idx)
+            return int(target[0]), int(target[1]), target[2]
 
         def _poi_tsd_state() -> Optional[Dict[str, object]]:
-            control_idx = _poi_control_portal_index()
-            if control_idx is None:
+            target = _poi_format_obj()
+            if target is None:
                 return None
-            primary = portal_formats[control_idx].primary
-            fmt_name = str(getattr(primary, "name", ""))
+            _control_idx, _sub_idx, fmt_obj = target
+            fmt_name = str(getattr(fmt_obj, "name", ""))
             tsd_key = _normalize_tsd_name(fmt_name)
             if tsd_key is None:
                 return None
@@ -22463,10 +23209,10 @@ def main() -> None:
 
         def _hotas_apply_poi_osb(label: str, valid_formats: Set[str]) -> bool:
             osb_label = str(label).upper().strip()
-            control_idx = _poi_control_portal_index()
-            if control_idx is None:
+            target = _poi_format_obj()
+            if target is None:
                 return False
-            portal_fmt = portal_formats[control_idx].primary
+            control_idx, _sub_idx, portal_fmt = target
             fmt_name = str(getattr(portal_fmt, "name", "")).upper().strip()
             if fmt_name not in valid_formats:
                 return False
@@ -22482,6 +23228,313 @@ def main() -> None:
                     pass
             return handled
 
+        def _hotas_management_scroll(delta: int) -> bool:
+            target = _poi_format_obj()
+            if target is None or int(delta) == 0:
+                return False
+            control_idx, _sub_idx, portal_fmt = target
+            fmt_name = str(getattr(portal_fmt, "name", "")).upper().strip()
+            label = ""
+            if fmt_name == "CNI":
+                label = "L4" if int(delta) < 0 else "L5"
+            elif fmt_name in {"DIM", "ICAWS", "PHM"}:
+                label = "L1" if int(delta) < 0 else "L2"
+            if label == "":
+                return False
+            context = FormatContext(control_idx, request_vded, set_format, close_vded)
+            try:
+                handled = bool(portal_fmt.on_osb(label, context))
+            except Exception:
+                handled = False
+            if handled:
+                try:
+                    osb_flash_until[(int(control_idx), label)] = int(pygame.time.get_ticks()) + OSB_FLASH_MS
+                except Exception:
+                    pass
+                print(f"[HOTAS][MNGMT] {fmt_name} {label}")
+            return handled
+
+        def _set_system_mode_from_hotas(mode: str, source: str) -> None:
+            nonlocal system_mode
+            next_mode = str(mode).upper().strip()
+            if next_mode not in set(SYSTEM_MODES):
+                return
+            if system_mode != next_mode:
+                system_mode = next_mode
+                print(f"[HOTAS][WMS] {source} -> {next_mode}")
+
+        if int(mngmt_scroll_delta) != 0:
+            _hotas_management_scroll(int(mngmt_scroll_delta))
+
+        def _toggle_thermal_polarity_for_poi() -> None:
+            target = _poi_format_obj()
+            fmt_name = ""
+            if target is not None:
+                try:
+                    fmt_name = str(getattr(target[2], "name", "")).upper().strip()
+                except Exception:
+                    fmt_name = ""
+            targets: List[Tuple[str, str]] = []
+            if fmt_name == "TFLIR":
+                targets.append(("TFLIR", "TFLIR3D_STATE"))
+            elif fmt_name == "DAS":
+                targets.append(("DAS", "DAS3D_STATE"))
+            else:
+                # Fallback keeps the button useful if POI is not yet on a
+                # thermal format; the active renderer will pick up its state.
+                targets.extend((("TFLIR", "TFLIR3D_STATE"), ("DAS", "DAS3D_STATE")))
+            for label, state_attr in targets:
+                raw_state = getattr(formats, state_attr, {})
+                state_dict = raw_state if isinstance(raw_state, dict) else {}
+                current_whot = bool(state_dict.get("whot", not bool(state_dict.get("bhot", False))))
+                next_whot = not current_whot
+                state_dict["whot"] = bool(next_whot)
+                state_dict["bhot"] = bool(not next_whot)
+                setattr(formats, state_attr, state_dict)
+                print(f"[HOTAS][POL] {label} -> {'WHOT' if next_whot else 'BHOT'}")
+
+        def _toggle_sms_weapon_bay_doors() -> None:
+            try:
+                sms_cls = getattr(formats, "SmsFormat", None)
+                if sms_cls is not None:
+                    sms_fmt = sms_cls()
+                    # Use the same implementation behind SMS L3 DOORS without
+                    # depending on whatever SMS submenu is currently visible.
+                    before_open = bool(int(getattr(formats, "SMS_STATE", {}).get("doors_open", 0) or 0))
+                    sms_fmt._toggle_doors()
+                    doors_open = bool(int(getattr(formats, "SMS_STATE", {}).get("doors_open", 0) or 0))
+                    suffix = "" if doors_open != before_open else " no_change"
+                    print(f"[HOTAS][APC] SMS L3 DOORS -> {'OPEN' if doors_open else 'CLOSED'}{suffix}")
+                    return
+            except Exception as exc:
+                print(f"[HOTAS][APC] SMS L3 DOORS failed: {exc}")
+
+            # Fallback only if the SMS format class is unavailable.
+            sms_state = getattr(formats, "SMS_STATE", {})
+            if not isinstance(sms_state, dict):
+                return
+            lt_state = str(sms_state.get("lt_state", "CLOSE")).upper()
+            rt_state = str(sms_state.get("rt_state", "CLOSE")).upper()
+            doors_open_legacy = bool(int(sms_state.get("doors_open", 0) or 0))
+            target_open = not (doors_open_legacy or lt_state in {"OPEN", "PARTIAL"} or rt_state in {"OPEN", "PARTIAL"})
+            target = "OPEN" if target_open else "CLOSE"
+            sms_state["doors_open"] = 1 if target_open else 0
+            for prefix in ("lt", "rt"):
+                state_key = f"{prefix}_state"
+                target_key = f"{prefix}_target"
+                due_key = f"{prefix}_transition_due_ms"
+                sms_state[target_key] = target
+                if str(sms_state.get(state_key, "CLOSE")).upper() != target:
+                    sms_state[state_key] = "PARTIAL"
+                    sms_state[due_key] = int(now_ms + 3000)
+            print(f"[HOTAS][APC] fallback weapon_bay_doors -> {target}")
+
+        def _trigger_sms_l3_doors_from_hotas() -> None:
+            _toggle_sms_weapon_bay_doors()
+
+        def _autopilot_any_mode_on() -> bool:
+            ap_state = _autopilot_state()
+            return bool(
+                ap_state.get("att_hold", False)
+                or ap_state.get("hdg_sel", False)
+                or ap_state.get("alt_hold", False)
+                or ap_state.get("alt_sel", False)
+                or ap_state.get("speed_hold", False)
+                or ap_state.get("speed_sel", False)
+                or ap_state.get("rte_hold", False)
+            )
+
+        def _autopilot_disconnect() -> None:
+            ap_state = _autopilot_state()
+            try:
+                fcs_state = getattr(formats, "FCS_STATE", None)
+                if isinstance(fcs_state, dict):
+                    fcs_state["ap"] = False
+            except Exception:
+                pass
+            for key in (
+                "att_hold",
+                "hdg_sel",
+                "alt_hold",
+                "alt_sel",
+                "speed_hold",
+                "speed_sel",
+                "rte_hold",
+                "speed_menu_open",
+            ):
+                ap_state[key] = False
+            ap_state["selected_field"] = None
+            ap_state.pop("speed_hold_trim_throttle_pct", None)
+            ap_state.pop("speed_sel_trim_throttle_pct", None)
+            print("[HOTAS][DISCONNECT] FCS A/P OSB -> OFF")
+
+        def _refuel_doors_open() -> bool:
+            try:
+                fuel_cls = getattr(formats, "FuelFormat", None)
+                if fuel_cls is None:
+                    return False
+                t2_open = bool(getattr(fuel_cls, "_shared_refuel_t2_on", False))
+                hazard_on = getattr(fuel_cls, "_shared_hazard_on", None)
+                r6_open = bool(hazard_on.get("R6", False)) if isinstance(hazard_on, dict) else False
+                return bool(t2_open or r6_open)
+            except Exception:
+                return False
+
+        def _set_fuel_refuel_osb_from_disconnect(target_open: bool) -> None:
+            try:
+                fuel_cls = getattr(formats, "FuelFormat", None)
+                if fuel_cls is None:
+                    return
+                # FUEL T2 REFUEL is the normal refuel door command path. Clear
+                # the emergency R6 path so DISCONNECT does not bypass the OSB.
+                setattr(fuel_cls, "_shared_refuel_t2_on", bool(target_open))
+                hazard_on = getattr(fuel_cls, "_shared_hazard_on", None)
+                if isinstance(hazard_on, dict):
+                    hazard_on["R6"] = False
+                cover_closed = getattr(fuel_cls, "_shared_hazard_cover_closed", None)
+                if isinstance(cover_closed, dict):
+                    cover_closed["R6"] = True
+            except Exception:
+                return
+            print(f"[HOTAS][DISCONNECT] FUEL REFUEL OSB -> {'OPEN' if target_open else 'CLOSE'}")
+
+        def _toggle_speed_hold() -> None:
+            ap_state = _autopilot_state()
+            new_on = not bool(ap_state.get("speed_hold", False))
+            ap_state["speed_hold"] = bool(new_on)
+            if new_on:
+                ap_state["speed_sel"] = False
+                try:
+                    curr_speed = float(aircraft.get("TOTAL_SPEED_KTS", aircraft.get("AIRSPEED_KTS", 0.0)))
+                except Exception:
+                    curr_speed = 0.0
+                ap_state["speed_hold_target_kts"] = float(max(0.0, curr_speed))
+            print(f"[HOTAS][SPD HOLD] {'ON' if new_on else 'OFF'} target={float(ap_state.get('speed_hold_target_kts') or 0.0):.0f}")
+
+        def _step_speed_hold(delta_kts: float) -> None:
+            ap_state = _autopilot_state()
+            if not bool(ap_state.get("speed_hold", False)):
+                try:
+                    curr_speed = float(aircraft.get("TOTAL_SPEED_KTS", aircraft.get("AIRSPEED_KTS", 0.0)))
+                except Exception:
+                    curr_speed = 0.0
+                ap_state["speed_hold"] = True
+                ap_state["speed_sel"] = False
+                ap_state["speed_hold_target_kts"] = float(max(0.0, curr_speed))
+            try:
+                base = float(ap_state.get("speed_hold_target_kts", aircraft.get("TOTAL_SPEED_KTS", aircraft.get("AIRSPEED_KTS", 0.0))))
+            except Exception:
+                base = 0.0
+            ap_state["speed_hold_target_kts"] = float(max(0.0, base + float(delta_kts)))
+            print(f"[HOTAS][SPD HOLD] target={float(ap_state.get('speed_hold_target_kts') or 0.0):.0f}")
+
+        if _rising("wms_fwd"):
+            _set_system_mode_from_hotas("AA1", "FWD")
+        if _rising("wms_right"):
+            _set_system_mode_from_hotas("AA2", "RIGHT")
+        if _rising("wms_left"):
+            _set_system_mode_from_hotas("AS", "LEFT")
+        if _rising("wms_aft"):
+            _set_system_mode_from_hotas("DGFT", "AFT")
+        if _rising("wms_z"):
+            _set_system_mode_from_hotas("NAV", "Z")
+
+        if _rising("cage_uncage"):
+            marker = str(pmd_dr_state.get("hotas_nav_marker", "FPM")).upper().strip()
+            marker = "CDM" if marker == "FPM" else "FPM"
+            pmd_dr_state["hotas_nav_marker"] = marker
+            print(f"[HOTAS][CAGE] nav_marker={marker}")
+
+        if _single_press("pol_ctrl", "hotas_pol_ctrl_prev_down"):
+            _toggle_thermal_polarity_for_poi()
+
+        if _single_press("spd_hold_z", "hotas_spd_hold_z_prev_down"):
+            _toggle_speed_hold()
+        if _rising("spd_hold_up"):
+            _step_speed_hold(1.0)
+        if _rising("spd_hold_down"):
+            _step_speed_hold(-1.0)
+
+        apc_binding = _hotas_get_connected_binding("aprch_pwr_comp")
+        apc_live_down = bool(_hotas_is_binding_down(apc_binding)) if isinstance(apc_binding, dict) else False
+        apc_override_raw = pmd_dr_state.get("hotas_event_down_override", {})
+        apc_override = apc_override_raw if isinstance(apc_override_raw, dict) else {}
+        apc_event_down = bool(apc_override.get("aprch_pwr_comp", False))
+        apc_raw_down = bool(hotas_now_map.get("aprch_pwr_comp", False))
+        apc_key_down = bool(key_now_map.get("aprch_pwr_comp", False))
+        apc_instant_down = bool(apc_key_down or apc_event_down or apc_raw_down or apc_live_down)
+        if apc_instant_down:
+            pmd_dr_state["apc_last_down_ms"] = int(now_ms)
+        try:
+            apc_last_down_ms = int(pmd_dr_state.get("apc_last_down_ms", 0))
+        except Exception:
+            apc_last_down_ms = 0
+        # Warthog buttons can emit brief release bounces. Treat releases under
+        # 300ms as still held so a real hold reaches the 500ms threshold.
+        apc_held = bool(apc_instant_down or (apc_last_down_ms > 0 and int(now_ms) - apc_last_down_ms <= 300))
+        apc_debug_state = (
+            bool(apc_key_down),
+            bool(apc_event_down),
+            bool(apc_raw_down),
+            bool(apc_live_down),
+            bool(apc_held),
+        )
+        if tuple(pmd_dr_state.get("apc_debug_state", (None, None, None, None, None))) != apc_debug_state:
+            pmd_dr_state["apc_debug_state"] = apc_debug_state
+            print(
+                "[HOTAS][APC] "
+                f"key={int(apc_key_down)} event={int(apc_event_down)} "
+                f"raw={int(apc_raw_down)} live={int(apc_live_down)} held={int(apc_held)}"
+            )
+        apc_prev_held = bool(pmd_dr_state.get("apc_prev_held", False))
+        if apc_held and not apc_prev_held:
+            pmd_dr_state["apc_hold_start_ms"] = int(now_ms)
+            pmd_dr_state["apc_hold_fired"] = False
+            print("[HOTAS][APC] hold_start")
+        if apc_held:
+            try:
+                apc_start_ms = int(pmd_dr_state.get("apc_hold_start_ms", now_ms))
+            except Exception:
+                apc_start_ms = int(now_ms)
+            if (not bool(pmd_dr_state.get("apc_hold_fired", False))) and int(now_ms) - int(apc_start_ms) >= 500:
+                _trigger_sms_l3_doors_from_hotas()
+                pmd_dr_state["apc_hold_fired"] = True
+        elif apc_prev_held:
+            try:
+                held_ms = int(now_ms) - int(pmd_dr_state.get("apc_hold_start_ms", now_ms))
+            except Exception:
+                held_ms = 0
+            if not bool(pmd_dr_state.get("apc_hold_fired", False)):
+                print(f"[HOTAS][APC] released_before_500ms held_ms={held_ms}")
+            pmd_dr_state["apc_hold_start_ms"] = 0
+            pmd_dr_state["apc_hold_fired"] = False
+        pmd_dr_state["apc_prev_held"] = bool(apc_held)
+
+        if _single_press("comm_ctl_z", "hotas_comm_ctl_z_prev_down"):
+            try:
+                if bool(efi_hotas_popup_active):
+                    efi_hotas_popup_active = False
+                    print("[HOTAS][COMM CTL] EFI popup OFF")
+                else:
+                    _close_status_menu_if_portal_conflicts(0)
+                    _close_status_popups_for_portal(0)
+                    close_vded_for_portal(0)
+                    efi_hotas_popup_active = True
+                    print("[HOTAS][COMM CTL] EFI popup -> P1")
+            except Exception as exc:
+                print(f"[HOTAS][COMM CTL] EFI failed: {exc}")
+
+        if _single_press("disconnect", "hotas_disconnect_prev_down"):
+            refuel_open = _refuel_doors_open()
+            if _autopilot_any_mode_on():
+                _autopilot_disconnect()
+                if refuel_open:
+                    _set_fuel_refuel_osb_from_disconnect(False)
+            elif refuel_open:
+                _set_fuel_refuel_osb_from_disconnect(False)
+            else:
+                _set_fuel_refuel_osb_from_disconnect(True)
+
         tsd_state = _poi_tsd_state()
         if tsd_state is not None and _rising("zoom_zero"):
             tsd_state["kbd_zoom_scale"] = 1.0
@@ -22489,9 +23542,9 @@ def main() -> None:
             tsd_state["kbd_pan_y_px"] = 0.0
         if _rising("zoom_zero"):
             _hotas_apply_poi_osb("T2", {"PHM"})
-        if tsd_state is not None and (_rising("poi_plus") or _rising("poi_minus")):
+        if tsd_state is not None and (_rising("poi_plus") or _rising("poi_minus") or _rising("fov_up") or _rising("fov_down")):
             current_range = _quantize_tsd_range_nm(tsd_state.get("range_nm", 20.0))
-            if _rising("poi_plus"):
+            if _rising("poi_plus") or _rising("fov_down"):
                 next_range = _quantize_tsd_range_nm(float(current_range) + 10.0)
             else:
                 next_range = _quantize_tsd_range_nm(float(current_range) - 10.0)
@@ -22508,21 +23561,35 @@ def main() -> None:
         if _rising("poi_minus"):
             _hotas_apply_poi_osb("L2", {"PHM", "DIM", "ICAWS"})
 
+        def _post_hotas_cursor_click() -> bool:
+            try:
+                if not bool(pmd_dr_state.get("hotas_slew_cursor_visible", True)):
+                    return False
+                slew_pos_local = _read_slew_cursor_pos()
+                win_pos = _window_from_logical_pos((int(slew_pos_local[0]), int(slew_pos_local[1])))
+                pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": win_pos, "button": 1, "hotas_virtual": True}))
+                pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": win_pos, "button": 1, "hotas_virtual": True}))
+                return True
+            except Exception:
+                return False
+
+        if _single_press("slew_z", "hotas_slew_z_prev_down"):
+            if _post_hotas_cursor_click():
+                print("[HOTAS][SLEW Z] click")
+
         if _rising("slew_select"):
-            slew_pos = _read_slew_cursor_pos()
-            hovered_portal = _portal_index_under_pos(slew_pos)
-            poi_idx_now = normalize_poi_index(poi_portal_index)
-            if hovered_portal is not None and ((not bool(poi_on_screen)) or (int(hovered_portal) != int(poi_idx_now))):
-                poi_portal_index = int(hovered_portal)
-                poi_on_screen = True
-                _center_hotas_cursor_on_portal(poi_portal_index, make_visible=True)
-            else:
-                try:
-                    win_pos = _window_from_logical_pos((int(slew_pos[0]), int(slew_pos[1])))
-                    pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": win_pos, "button": 1, "hotas_virtual": True}))
-                    pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": win_pos, "button": 1, "hotas_virtual": True}))
-                except Exception:
-                    pass
+            if not _poi_format_consumes_slew_input():
+                slew_pos = _read_slew_cursor_pos()
+                hovered_target = _poi_target_under_pos(slew_pos)
+                poi_idx_now = normalize_poi_index(poi_portal_index)
+                selected_new_poi = False
+                if hovered_target is not None:
+                    hovered_portal, hovered_sub = hovered_target
+                    if ((not bool(poi_on_screen)) or (int(hovered_portal) != int(poi_idx_now)) or (_clamp_poi_sub_index(poi_sub_index) != int(hovered_sub))):
+                        _set_poi_target(int(hovered_portal), int(hovered_sub))
+                        selected_new_poi = True
+                if not selected_new_poi:
+                    _post_hotas_cursor_click()
 
         if _rising("toi"):
             _toggle_toi_at_cursor()
@@ -22564,64 +23631,114 @@ def main() -> None:
             if isinstance(throttle_state, dict):
                 throttle_state["ENGINE"] = str(target_engine)
 
-        gear_hotas_bound = isinstance(_hotas_get_connected_binding("ldg_gear"), dict)
-        gear_binding_active = bool(gear_hotas_bound or (len(_pmd_action_key_codes("ldg_gear")) > 0))
-        if gear_binding_active:
-            gear_mode = str(pmd_dr_state.get("hotas_ldg_gear_mode", "TOGGLE")).upper()
-            if gear_mode not in {"MOMENTARY", "TOGGLE"}:
-                gear_mode = "TOGGLE"
-            keyboard_pressed = bool(key_now_map.get("ldg_gear", False))
-            keyboard_rising = bool(keyboard_pressed and (not bool(key_prev_map.get("ldg_gear", False))))
-            if gear_mode == "TOGGLE":
-                if _rising("ldg_gear"):
-                    _set_console_left_panel_control("GEAR", 1, True)
-            else:
-                hotas_pressed = False
-                prev_gear_pressed = False
-                if gear_hotas_bound:
-                    raw_map = pmd_dr_state.get("hotas_action_down_raw", {})
-                    raw_hotas = raw_map if isinstance(raw_map, dict) else {}
-                    raw_hotas_pressed = bool(raw_hotas.get("ldg_gear", False))
-                    try:
-                        hotas_now_ms = int(pygame.time.get_ticks())
-                    except Exception:
-                        hotas_now_ms = 0
-                    prev_raw = bool(pmd_dr_state.get("hotas_ldg_gear_db_raw", raw_hotas_pressed))
-                    try:
-                        raw_since_ms = int(pmd_dr_state.get("hotas_ldg_gear_db_since_ms", hotas_now_ms))
-                    except Exception:
-                        raw_since_ms = hotas_now_ms
-                    debounced_hotas_pressed = bool(pmd_dr_state.get("hotas_ldg_gear_db_state", raw_hotas_pressed))
-                    if raw_hotas_pressed != prev_raw:
-                        prev_raw = raw_hotas_pressed
-                        raw_since_ms = hotas_now_ms
-                    debounce_ms = 180
-                    if raw_hotas_pressed != debounced_hotas_pressed and (hotas_now_ms - raw_since_ms) >= debounce_ms:
-                        debounced_hotas_pressed = raw_hotas_pressed
-                    pmd_dr_state["hotas_ldg_gear_db_raw"] = bool(prev_raw)
-                    pmd_dr_state["hotas_ldg_gear_db_since_ms"] = int(raw_since_ms)
-                    pmd_dr_state["hotas_ldg_gear_db_state"] = bool(debounced_hotas_pressed)
-                    hotas_pressed = bool(debounced_hotas_pressed)
-                    prev_gear_pressed = bool(pmd_dr_state.get("hotas_ldg_gear_prev_pressed", hotas_pressed))
+        gear_binding = _hotas_get_connected_binding("ldg_gear")
+        gear_hotas_bound = isinstance(gear_binding, dict)
+        keyboard_gear_rising = bool(key_now_map.get("ldg_gear", False)) and (not bool(key_prev_map.get("ldg_gear", False)))
+        gear_live_down = bool(_hotas_is_binding_down(gear_binding)) if isinstance(gear_binding, dict) else False
+        gear_raw_now = bool(hotas_now_map.get("ldg_gear", False) or gear_live_down)
+        gear_raw_prev_global = bool(prev_raw_map.get("ldg_gear", False))
+        if "hotas_gear_handler_prev_raw" in pmd_dr_state:
+            gear_raw_prev = bool(pmd_dr_state.get("hotas_gear_handler_prev_raw", False))
+        else:
+            gear_raw_prev = bool(gear_raw_prev_global)
+            pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_raw_now)
+        gear_raw_changed = bool(gear_raw_now != gear_raw_prev)
+        gear_mode = str(pmd_dr_state.get("hotas_ldg_gear_mode", "TOGGLE")).upper()
+        if gear_mode not in {"MOMENTARY", "TOGGLE"}:
+            gear_mode = "TOGGLE"
+        # In MOMENTARY mode, only the ON/pressed edge acts like pressing G.
+        # This prevents refocus/dropout release edges from lowering gear.
+        hotas_gear_event = bool(gear_hotas_bound and gear_raw_changed and (gear_mode != "MOMENTARY" or gear_raw_now))
+        gear_debug_state = (bool(gear_hotas_bound), bool(gear_raw_now), bool(gear_live_down), bool(gear_raw_changed), str(gear_mode), bool(gear_raw_prev), bool(gear_raw_prev_global))
+        prev_gear_debug_state = tuple(pmd_dr_state.get("hotas_gear_debug_state", (None, None, None, None, None, None, None)))
+        if prev_gear_debug_state != gear_debug_state:
+            pmd_dr_state["hotas_gear_debug_state"] = gear_debug_state
+            print(
+                "[HOTAS][GEAR] "
+                f"bound={int(bool(gear_hotas_bound))} raw={int(gear_raw_now)} live={int(gear_live_down)} "
+                f"prev={int(gear_raw_prev)} global_prev={int(gear_raw_prev_global)} "
+                f"changed={int(gear_raw_changed)} mode={gear_mode}"
+            )
+            try:
+                prev_debug_raw_known = isinstance(prev_gear_debug_state, tuple) and len(prev_gear_debug_state) >= 2 and prev_gear_debug_state[1] is not None
+                prev_debug_raw = bool(prev_gear_debug_state[1]) if prev_debug_raw_known else bool(gear_raw_now)
+            except Exception:
+                prev_debug_raw_known = False
+                prev_debug_raw = bool(gear_raw_now)
+            if (
+                gear_hotas_bound
+                and prev_debug_raw_known
+                and bool(gear_raw_now) != bool(prev_debug_raw)
+                and (gear_mode != "MOMENTARY" or bool(gear_raw_now))
+            ):
+                try:
+                    focus_inhibit_until_ms_dbg = int(pmd_dr_state.get("input_focus_inhibit_until_ms", 0))
+                except Exception:
+                    focus_inhibit_until_ms_dbg = 0
+                if int(now_ms) < int(focus_inhibit_until_ms_dbg):
+                    print(
+                        "[GEAR][IGNORE] "
+                        f"source=hotas_as_keyboard raw={int(gear_raw_now)} prev={int(prev_debug_raw)} "
+                        f"focus_inhibit_until_ms={int(focus_inhibit_until_ms_dbg)}"
+                    )
+                    hotas_gear_event = False
+                    pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_raw_now)
+                elif phase >= 1:
+                    print(
+                        "[GEAR][EDGE] "
+                        f"source=hotas_as_keyboard raw={int(gear_raw_now)} prev={int(prev_debug_raw)} "
+                        f"mode={gear_mode}"
+                    )
+                    _command_landing_gear_input("hotas_as_keyboard")
+                    hotas_gear_event = False
+                    pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_raw_now)
                 else:
-                    # No HOTAS switch available: MOMENTARY logic must not
-                    # consume keyboard releases.
-                    hotas_pressed = False
-                    prev_gear_pressed = False
-                state = _ensure_panel_button_states()
-                console_left = state.get("CONSOLE LEFT", {})
-                gear_is_up = bool(isinstance(console_left, dict) and str(console_left.get("GEAR", "DOWN_OFF")).upper().startswith("UP"))
-                # Keyboard keybind is edge-triggered and always valid.
-                if keyboard_rising:
-                    _set_console_left_panel_control("GEAR", 1, True)
-                    gear_is_up = bool(isinstance(console_left, dict) and str(console_left.get("GEAR", "DOWN_OFF")).upper().startswith("UP"))
-                # MOMENTARY semantics are HOTAS-only: switch on => gear up,
-                # switch off => gear down.
-                if hotas_pressed and (not prev_gear_pressed) and (not gear_is_up):
-                    _set_console_left_panel_control("GEAR", 1, True)
-                elif (not hotas_pressed) and prev_gear_pressed and gear_is_up:
-                    _set_console_left_panel_control("GEAR", 1, True)
-                pmd_dr_state["hotas_ldg_gear_prev_pressed"] = bool(hotas_pressed)
+                    print(f"[GEAR][BLOCK] source=hotas_as_keyboard phase={phase}")
+                    hotas_gear_event = False
+                    pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_raw_now)
+        gear_binding_active = bool(gear_hotas_bound or keyboard_gear_rising or hotas_gear_event or (len(_pmd_action_key_codes("ldg_gear")) > 0))
+        if gear_binding_active:
+            try:
+                focus_inhibit_until_ms = int(pmd_dr_state.get("input_focus_inhibit_until_ms", 0))
+            except Exception:
+                focus_inhibit_until_ms = 0
+            gear_inhibited = bool(now_ms < focus_inhibit_until_ms)
+            if gear_inhibited and hotas_gear_event:
+                print(
+                    "[GEAR][IGNORE] "
+                    f"source=hotas raw={int(gear_raw_now)} prev={int(gear_raw_prev)} "
+                    f"until_ms={int(focus_inhibit_until_ms)}"
+                )
+                hotas_gear_event = False
+            if gear_inhibited:
+                pmd_dr_state["hotas_ldg_gear_prev_pressed"] = bool(hotas_now_map.get("ldg_gear", False))
+                pmd_dr_state["hotas_ldg_gear_db_raw"] = bool(hotas_now_map.get("ldg_gear", False))
+                pmd_dr_state["hotas_ldg_gear_db_state"] = bool(hotas_now_map.get("ldg_gear", False))
+                pmd_dr_state["hotas_ldg_gear_db_since_ms"] = int(now_ms)
+            else:
+                if bool(pmd_dr_state.get("hotas_gear_pending_after_inhibit", False)):
+                    try:
+                        pending_raw = int(bool(pmd_dr_state.get("hotas_gear_pending_raw", gear_raw_now)))
+                        pending_prev = int(bool(pmd_dr_state.get("hotas_gear_pending_prev", gear_raw_prev)))
+                    except Exception:
+                        pending_raw = int(gear_raw_now)
+                        pending_prev = int(gear_raw_prev)
+                    pmd_dr_state["hotas_gear_pending_after_inhibit"] = False
+                    print(f"[GEAR][EDGE] source=hotas_deferred raw={pending_raw} prev={pending_prev} mode={gear_mode} bound={int(bool(gear_hotas_bound))}")
+                    _command_landing_gear("hotas_deferred")
+                    hotas_gear_event = False
+                if keyboard_gear_rising:
+                    print("[GEAR][EDGE] source=keyboard_state")
+                    _command_landing_gear("keyboard_state")
+                if hotas_gear_event:
+                    print(
+                        "[GEAR][EDGE] "
+                        f"source=hotas raw={int(gear_raw_now)} prev={int(gear_raw_prev)} "
+                        f"mode={gear_mode} bound={int(bool(gear_hotas_bound))}"
+                    )
+                    _command_landing_gear("hotas")
+                pmd_dr_state["hotas_ldg_gear_prev_pressed"] = bool(hotas_now_map.get("ldg_gear", False))
+            pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_raw_now)
 
         brake_binding_active = isinstance(_hotas_get_connected_binding("brake"), dict) or (len(_pmd_action_key_codes("brake")) > 0)
         if brake_binding_active:
@@ -22726,6 +23843,77 @@ def main() -> None:
                 return False
             return _hotas_set_binding(action, {"type": "hat", "joy": joy_idx, "id": hat_idx, "dir": hat_dir})
         return False
+
+    def _hotas_update_runtime_event_state(event: pygame.event.Event) -> None:
+        event_type = int(getattr(event, "type", -1))
+        if event_type not in {_JOYBUTTONDOWN_EVENT, _JOYBUTTONUP_EVENT, _JOYHATMOTION_EVENT}:
+            return
+        joy_idx = _hotas_event_joy_index(event)
+        if joy_idx < 0:
+            return
+        overrides_raw = pmd_dr_state.get("hotas_event_down_override", {})
+        overrides: Dict[str, bool] = dict(overrides_raw) if isinstance(overrides_raw, dict) else {}
+        bindings = _hotas_bindings_dict()
+
+        def _binding_event_joy_matches(binding: Dict[str, object]) -> bool:
+            resolved = _hotas_resolve_binding_joy_index(binding)
+            return bool(resolved is not None and int(resolved) == int(joy_idx))
+
+        for action_name, binding_raw in bindings.items():
+            action_key = str(action_name).strip().lower()
+            if action_key not in HOTAS_ACTION_ORDER or not isinstance(binding_raw, dict):
+                continue
+            binding = binding_raw
+            if not _binding_event_joy_matches(binding):
+                continue
+            b_type = str(binding.get("type", "")).strip().lower()
+            if event_type in {_JOYBUTTONDOWN_EVENT, _JOYBUTTONUP_EVENT} and b_type == "button":
+                try:
+                    btn_idx = int(getattr(event, "button"))
+                    bind_btn = int(binding.get("id", -1))
+                except Exception:
+                    continue
+                if btn_idx != bind_btn:
+                    continue
+                prev_down = bool(overrides.get(action_key, False))
+                overrides[action_key] = bool(event_type == _JOYBUTTONDOWN_EVENT)
+                if action_key in {"aprch_pwr_comp", "ldg_gear"}:
+                    print(f"[HOTAS][EVENT] {action_key}={int(overrides[action_key])} joy={joy_idx} button={btn_idx}")
+                if action_key == "ldg_gear" and event_type == _JOYBUTTONDOWN_EVENT and not prev_down:
+                    try:
+                        focus_inhibit_until_ms = int(pmd_dr_state.get("input_focus_inhibit_until_ms", 0))
+                    except Exception:
+                        focus_inhibit_until_ms = 0
+                    now_evt = int(pygame.time.get_ticks())
+                    if now_evt < focus_inhibit_until_ms:
+                        print(f"[GEAR][IGNORE] source=hotas_event focus_inhibit_until_ms={focus_inhibit_until_ms}")
+                    elif phase >= 1:
+                        print("[GEAR][EDGE] source=hotas_event")
+                        _command_landing_gear_input("hotas_event")
+                    else:
+                        print(f"[GEAR][BLOCK] source=hotas_event phase={phase}")
+                elif action_key == "aprch_pwr_comp":
+                    pass
+            elif event_type == _JOYHATMOTION_EVENT and b_type == "hat":
+                try:
+                    hat_idx = int(getattr(event, "hat"))
+                    bind_hat = int(binding.get("id", -1))
+                    hat_val = getattr(event, "value")
+                    x_val = int(hat_val[0]) if isinstance(hat_val, (tuple, list)) and len(hat_val) > 0 else 0
+                    y_val = int(hat_val[1]) if isinstance(hat_val, (tuple, list)) and len(hat_val) > 1 else 0
+                except Exception:
+                    continue
+                if hat_idx != bind_hat:
+                    continue
+                hat_dir = str(binding.get("dir", "")).upper().strip()
+                down = (
+                    (hat_dir == "UP" and y_val > 0)
+                    or (hat_dir == "DOWN" and y_val < 0)
+                    or (hat_dir == "LEFT" and x_val < 0)
+                    or (hat_dir == "RIGHT" and x_val > 0)
+                )
+                overrides[action_key] = bool(down)
+        pmd_dr_state["hotas_event_down_override"] = dict(overrides)
 
     def _hotas_axis_throttle_percent() -> Optional[float]:
         binding = _hotas_get_binding("throttle")
@@ -26531,8 +27719,10 @@ def main() -> None:
         cold_half_hold_on_batt = (start_mode == "hot")
 
     prev_icaws_cw_keys: Set[str] = set()
+    slow_frame_watchdog = create_slow_frame_watchdog("PCD")
 
     while running:
+        slow_frame_watchdog.begin_frame("main_loop")
         now = pygame.time.get_ticks()
         wall_now_ms = int(time.time() * 1000)
         sync_panel_text_lites_tint()
@@ -26747,11 +27937,11 @@ def main() -> None:
         hotas_raw_down = pmd_dr_state.get("hotas_action_down_raw", {})
         hotas_raw_map = hotas_raw_down if isinstance(hotas_raw_down, dict) else {}
         # HOTAS COM A/B/C are direct PTT-by-radio actions.
-        if bool(hotas_raw_map.get("com_a", False)):
+        if bool(hotas_raw_map.get("com_a", False) or hotas_raw_map.get("comm_ctl_left", False)):
             local_ptt_radio = "coma"
-        elif bool(hotas_raw_map.get("com_b", False)):
+        elif bool(hotas_raw_map.get("com_b", False) or hotas_raw_map.get("comm_ctl_right", False)):
             local_ptt_radio = "comb"
-        elif bool(hotas_raw_map.get("com_c", False)):
+        elif bool(hotas_raw_map.get("com_c", False) or hotas_raw_map.get("comm_ctl_aft", False) or hotas_raw_map.get("comm_ctl_down", False)):
             local_ptt_radio = "comc"
         elif _pmd_is_action_down("tx", pressed):
             assigned = str(comm_state.get("asgn_radio", "comb")).strip().lower()
@@ -27133,9 +28323,17 @@ def main() -> None:
                     elif sev == "caution":
                         new_caution = True
         if new_warning:
-            play_sound_effect("warning")
+            play_sound_effect_on_channel(
+                "warning",
+                SFX_CH_ICAWS_WARNING,
+                volume=float(_icaws_alert_volume()),
+            )
         if new_caution:
-            play_sound_effect("caution")
+            play_sound_effect_on_channel(
+                "caution",
+                SFX_CH_ICAWS_CAUTION,
+                volume=float(_icaws_alert_volume()),
+            )
         prev_icaws_cw_keys = set(current_icaws_cw_keys)
         mode_c_degd_active = "IFF DEGD MODE C" in active_icaw_names
         cm_fail_iff_active = "CM FAIL - IFF" in active_icaw_names
@@ -27532,7 +28730,11 @@ def main() -> None:
                 except Exception:
                     traceback.print_exc()
         if poi_on_screen:
-            poi_portal_index = normalize_poi_index(poi_portal_index)
+            poi_sub_index = _clamp_poi_sub_index(poi_sub_index)
+            if int(poi_sub_index) >= 0 and (not _poi_subportal_selectable(poi_portal_index, poi_sub_index)):
+                poi_sub_index = -1
+            if int(poi_sub_index) < 0:
+                poi_portal_index = normalize_poi_index(poi_portal_index)
         debug_overlay_active = bool(cockpit_panels_popup_active)
         try:
             _hotas_apply_edge_actions(debug_overlay_active, dt_sec)
@@ -27667,6 +28869,7 @@ def main() -> None:
                 status_menu_popup_portal_index,
                 active_status_popups_by_portal,
                 poi_portal_index,
+                poi_sub_index,
                 poi_on_screen,
                 _pmd_collect_status_menu_buttons(status_menu_active_submenu),
             )
@@ -27741,6 +28944,7 @@ def main() -> None:
                 status_menu_popup_portal_index,
                 active_status_popups_by_portal,
                 poi_portal_index,
+                poi_sub_index,
                 poi_on_screen,
                 _pmd_collect_status_menu_buttons(status_menu_active_submenu),
             )
@@ -27861,15 +29065,63 @@ def main() -> None:
                         event.pos = mapped
                     except Exception:
                         pass
+            focus_event = event.type in {_WINDOWFOCUSGAINED_EVENT, _WINDOWFOCUSLOST_EVENT}
+            if (not focus_event) and event.type == _ACTIVEEVENT_EVENT:
+                try:
+                    focus_event = bool(int(getattr(event, "state", 0)) & 2)
+                except Exception:
+                    focus_event = False
+            if focus_event:
+                held_keys.clear()
+                raw_hotas = pmd_dr_state.get("hotas_action_down_raw", {})
+                hotas_now = dict(raw_hotas) if isinstance(raw_hotas, dict) else {}
+                pmd_dr_state["hotas_event_down_override"] = dict(hotas_now)
+                pmd_dr_state["hotas_prev_down_raw"] = dict(hotas_now)
+                pmd_dr_state["hotas_prev_down"] = dict(hotas_now)
+                pmd_dr_state["hotas_prev_key_down"] = {}
+                gear_now = bool(hotas_now.get("ldg_gear", False))
+                pmd_dr_state["hotas_gear_handler_prev_raw"] = bool(gear_now)
+                pmd_dr_state["hotas_gear_debug_state"] = (
+                    bool(_hotas_get_connected_binding("ldg_gear")),
+                    bool(gear_now),
+                    bool(gear_now),
+                    False,
+                    str(pmd_dr_state.get("hotas_ldg_gear_mode", "TOGGLE")).upper(),
+                    bool(gear_now),
+                    bool(gear_now),
+                )
+                pmd_dr_state["hotas_ldg_gear_prev_pressed"] = gear_now
+                pmd_dr_state["hotas_ldg_gear_db_raw"] = gear_now
+                pmd_dr_state["hotas_ldg_gear_db_state"] = gear_now
+                pmd_dr_state["hotas_ldg_gear_db_since_ms"] = int(now)
+                pmd_dr_state["apc_hold_start_ms"] = 0
+                pmd_dr_state["apc_hold_fired"] = False
+                pmd_dr_state["apc_prev_held"] = False
+                pmd_dr_state["apc_last_down_ms"] = 0
+                pmd_dr_state["input_focus_inhibit_until_ms"] = int(now + 800)
+                continue
             if event.type in {_JOYDEVICEADDED_EVENT, _JOYDEVICEREMOVED_EVENT}:
-                _hotas_refresh_devices()
-                pmd_dr_state["hotas_refresh_next_ms"] = int(now + 750)
+                # Joystick enumeration can briefly stall SDL/DirectInput.
+                # Schedule it outside the event dispatch path.
+                pmd_dr_state["hotas_refresh_next_ms"] = int(now + 100)
                 continue
             if event.type in {_JOYAXISMOTION_EVENT, _JOYBUTTONDOWN_EVENT, _JOYHATMOTION_EVENT}:
+                _hotas_update_runtime_event_state(event)
                 if _hotas_capture_event(event):
                     pmd_dr_state["hotas_edit_capture_selected"] = False
                     pmd_dr_state["hotas_edit_status"] = "Captured."
                     continue
+            if event.type == _JOYBUTTONUP_EVENT:
+                _hotas_update_runtime_event_state(event)
+            if event.type == pygame.KEYDOWN and _pmd_event_matches_landing_gear(event.key):
+                # Gear is a flight-control keybind, not a text/data-entry key.
+                # Handle it before generic data-entry paths so a focused popup
+                # cannot consume the press and make gear appear dead.
+                if phase >= 1:
+                    _command_landing_gear_input("keyboard_event")
+                else:
+                    print(f"[GEAR][BLOCK] source=keyboard_event phase={phase}")
+                continue
             if event.type == pygame.KEYDOWN and _handle_keyboard_data_entry(event):
                 continue
             if event.type == pygame.QUIT:
@@ -27907,6 +29159,13 @@ def main() -> None:
                 cockpit_panels_popup_active = not cockpit_panels_popup_active
                 if not cockpit_panels_popup_active:
                     _release_panel_popup_holds()
+                continue
+            elif event.type == pygame.KEYDOWN and cockpit_panels_popup_active and event.key in {pygame.K_LEFT, pygame.K_RIGHT}:
+                total = max(1, len(_discover_panel_pages()))
+                if event.key == pygame.K_LEFT:
+                    cockpit_panels_page_index = (cockpit_panels_page_index - 1) % total
+                else:
+                    cockpit_panels_page_index = (cockpit_panels_page_index + 1) % total
                 continue
             elif event.type == pygame.KEYDOWN and _pmd_is_hold_action_key(event.key):
                 term_string_input_active_evt = bool(
@@ -28022,6 +29281,18 @@ def main() -> None:
                 mouse_down_at_ms = pygame.time.get_ticks()
                 mouse_down_popup_key = None
                 if debug_overlay_active:
+                    if isinstance(debug_popup_rect, pygame.Rect):
+                        left_page_rect, right_page_rect = cockpit_panel_page_arrow_rects(debug_popup_rect)
+                        if left_page_rect.collidepoint(event.pos) or right_page_rect.collidepoint(event.pos):
+                            total = max(1, len(_discover_panel_pages()))
+                            if left_page_rect.collidepoint(event.pos):
+                                cockpit_panels_page_index = (cockpit_panels_page_index - 1) % total
+                            else:
+                                cockpit_panels_page_index = (cockpit_panels_page_index + 1) % total
+                            mouse_down = False
+                            panel_touch_swipe = None
+                            panel_touch_active_button = 1
+                            continue
                     if is_touch_event:
                         panel_touch_active_button = _panel_popup_touch_button_from_pos(event.pos)
                         panel_touch_swipe = {
@@ -29133,7 +30404,10 @@ def main() -> None:
                                         status_menu_pending_action = ("open", "PMD_DR_LOAD_MSN", now + OSB_FLASH_MS)
                                     elif key == "PMD_DR_D8_PGRM_REC":
                                         pass
-                                    elif key in {"PMD_DR_B1_DATA_PUMP", "PMD_DR_E2_REC_ALL_ON", "PMD_DR_E4_REC_ALL_OFF", "PMD_DR_E5_LHMD", "PMD_DR_E6_RHMD", "PMD_DR_E7_HMD"}:
+                                    elif key == "PMD_DR_B1_DATA_PUMP":
+                                        saved_path = _save_console_capture_pmdlog()
+                                        pmd_dr_state["data_pump_last_path"] = str(saved_path or "")
+                                    elif key in {"PMD_DR_E2_REC_ALL_ON", "PMD_DR_E4_REC_ALL_OFF", "PMD_DR_E5_LHMD", "PMD_DR_E6_RHMD", "PMD_DR_E7_HMD"}:
                                         pass
                                     elif key == "PMD_DR_C1":
                                         pmd_dr_state["icaws_page"] = 0
@@ -29174,6 +30448,7 @@ def main() -> None:
                                         status_menu_pending_action = ("open", "PMD_DR_DEGRD_DEBUG", now + OSB_FLASH_MS)
                                     elif key == "PMD_DR_D2_KEYBINDS":
                                         pmd_dr_state["keybind_page"] = 0
+                                        pmd_dr_state["keybind_subpage"] = ""
                                         status_menu_pending_action = ("open", "PMD_DR_KEYBINDS", now + OSB_FLASH_MS)
                                     elif key == "PMD_DR_D3_CESIUM_TOKEN":
                                         pmd_dr_state["cesium_token_selected"] = False
@@ -29198,6 +30473,16 @@ def main() -> None:
                                         action_name = str(key[len("PMD_KEYBINDS_EDIT_"):]).strip().lower()
                                         if action_name != "":
                                             select_pmd_keybind_data_entry(action_name)
+                                    elif key == "PMD_KEYBINDS_C8_PREV":
+                                        current_keybind = _pmd_keybind_selected_field()
+                                        if current_keybind is not None:
+                                            finalize_pmd_keybind_data_entry(current_keybind)
+                                        try:
+                                            page_now = int(pmd_dr_state.get("keybind_page", 0))
+                                        except Exception:
+                                            page_now = 0
+                                        pmd_dr_state["keybind_page"] = (page_now - 1) % 4
+                                        pmd_dr_state["keybind_subpage"] = ""
                                     elif key == "PMD_KEYBINDS_D8_NEXT":
                                         current_keybind = _pmd_keybind_selected_field()
                                         if current_keybind is not None:
@@ -29206,9 +30491,29 @@ def main() -> None:
                                             page_now = int(pmd_dr_state.get("keybind_page", 0))
                                         except Exception:
                                             page_now = 0
-                                        pmd_dr_state["keybind_page"] = 1 if page_now == 0 else 0
-                                    elif key == "PMD_KEYBINDS_E7_HOTAS":
+                                        pmd_dr_state["keybind_page"] = (page_now + 1) % 4
+                                        pmd_dr_state["keybind_subpage"] = ""
+                                    elif key == "PMD_KEYBINDS_B8_CONT":
+                                        current_keybind = _pmd_keybind_selected_field()
+                                        if current_keybind is not None:
+                                            finalize_pmd_keybind_data_entry(current_keybind)
+                                        try:
+                                            page_now = int(pmd_dr_state.get("keybind_page", 0))
+                                        except Exception:
+                                            page_now = 0
+                                        if page_now == 2:
+                                            pmd_dr_state["keybind_subpage"] = "throttle"
+                                        elif page_now == 3:
+                                            pmd_dr_state["keybind_subpage"] = "stick"
+                                    elif key == "PMD_KEYBINDS_B8_SUBPREV":
+                                        current_keybind = _pmd_keybind_selected_field()
+                                        if current_keybind is not None:
+                                            finalize_pmd_keybind_data_entry(current_keybind)
+                                        pmd_dr_state["keybind_subpage"] = ""
+                                    elif key in {"PMD_KEYBINDS_A8_HOTAS", "PMD_KEYBINDS_E7_HOTAS"}:
                                         pmd_dr_state["hotas_edit_capture_selected"] = False
+                                        pmd_dr_state["hotas_page"] = 0
+                                        pmd_dr_state["hotas_subpage"] = ""
                                         _hotas_refresh_devices()
                                         status_menu_pending_action = ("open", "PMD_DR_HOTAS", now + OSB_FLASH_MS)
                                     elif key == "PMD_KEYBINDS_E8_MENU":
@@ -29216,12 +30521,39 @@ def main() -> None:
                                     elif key == "PMD_HOTAS_E8_BACK":
                                         pmd_dr_state["hotas_edit_capture_selected"] = False
                                         status_menu_pending_action = ("open", "PMD_DR_DEBUG", now + OSB_FLASH_MS)
-                                    elif key == "PMD_HOTAS_D8_NEXT":
+                                    elif key == "PMD_HOTAS_A8_HOTAS":
+                                        pmd_dr_state["hotas_edit_capture_selected"] = False
+                                        pmd_dr_state["hotas_subpage"] = ""
+                                        status_menu_pending_action = ("open", "PMD_DR_KEYBINDS", now + OSB_FLASH_MS)
+                                    elif key == "PMD_HOTAS_C8_PREV":
+                                        pmd_dr_state["hotas_edit_capture_selected"] = False
                                         try:
                                             page_now = int(pmd_dr_state.get("hotas_page", 0))
                                         except Exception:
                                             page_now = 0
-                                        pmd_dr_state["hotas_page"] = 1 if page_now == 0 else 0
+                                        pmd_dr_state["hotas_page"] = (page_now - 1) % 3
+                                        pmd_dr_state["hotas_subpage"] = ""
+                                    elif key == "PMD_HOTAS_D8_NEXT":
+                                        pmd_dr_state["hotas_edit_capture_selected"] = False
+                                        try:
+                                            page_now = int(pmd_dr_state.get("hotas_page", 0))
+                                        except Exception:
+                                            page_now = 0
+                                        pmd_dr_state["hotas_page"] = (page_now + 1) % 3
+                                        pmd_dr_state["hotas_subpage"] = ""
+                                    elif key == "PMD_HOTAS_B8_CONT":
+                                        pmd_dr_state["hotas_edit_capture_selected"] = False
+                                        try:
+                                            page_now = int(pmd_dr_state.get("hotas_page", 0))
+                                        except Exception:
+                                            page_now = 0
+                                        if page_now == 1:
+                                            pmd_dr_state["hotas_subpage"] = "throttle"
+                                        elif page_now == 2:
+                                            pmd_dr_state["hotas_subpage"] = "stick"
+                                    elif key == "PMD_HOTAS_B8_SUBPREV":
+                                        pmd_dr_state["hotas_edit_capture_selected"] = False
+                                        pmd_dr_state["hotas_subpage"] = ""
                                     elif key == "PMD_HOTAS_A1_SLEW_MODE":
                                         mode_now = _hotas_current_slew_mode()
                                         pmd_dr_state["hotas_slew_mode"] = "HAT" if mode_now == "AXIS" else "AXIS"
@@ -30755,7 +32087,7 @@ def main() -> None:
                             comm_gol_menu = str(comm_state.get("gol_menu", "")).upper().strip()
                             if comm_gol_menu == "" and bool(comm_state.get("asgn_menu_open", False)):
                                 comm_gol_menu = "D4"
-                            if comm_gol_menu in {"D4", "D7", "E7", "C8", "D8"}:
+                            if comm_gol_menu in {"D4", "D7", "E7"}:
                                 cell = f"{chr(ord('A') + int(col))}{int(row) + 1}"
                                 if comm_gol_menu == "D4":
                                     option_cells = [
@@ -30802,18 +32134,6 @@ def main() -> None:
                                     elif comm_gol_menu == "E7":
                                         comm_state["e7_auto"] = idx == 0
                                         comm_trigger_flash(f"E7_OPT_{idx}", now + OSB_FLASH_MS)
-                                    elif comm_gol_menu == "C8":
-                                        radio = str(comm_state.get("asgn_radio", "comb"))
-                                        new_val = idx == 0
-                                        _comm_set_profile_value(radio, "aj_on", new_val)
-                                        comm_state["aj_on"] = bool(new_val)
-                                        comm_trigger_flash(f"C8_OPT_{idx}", now + OSB_FLASH_MS)
-                                    elif comm_gol_menu == "D8":
-                                        radio = str(comm_state.get("asgn_radio", "comb"))
-                                        new_val = idx == 0
-                                        _comm_set_profile_value(radio, "secure_on", new_val)
-                                        comm_state["secure_on"] = bool(new_val)
-                                        comm_trigger_flash(f"D8_OPT_{idx}", now + OSB_FLASH_MS)
                                     comm_state["asgn_menu_open"] = False
                                     comm_state["gol_menu"] = ""
                                     handled = True
@@ -30960,7 +32280,10 @@ def main() -> None:
                                 comm_state["asgn_menu_open"] = False
                                 comm_state["pending_asgn_open_due"] = None
                                 comm_state["pending_asgn_close_due"] = None
-                                comm_state["gol_menu"] = "C8"
+                                radio = str(comm_state.get("asgn_radio", "comb"))
+                                new_val = not bool(comm_state.get("aj_on", False))
+                                _comm_set_profile_value(radio, "aj_on", new_val)
+                                comm_state["aj_on"] = bool(new_val)
                                 handled = True
                             elif col == 3 and row == 7:
                                 comm_trigger_flash("D8", now + OSB_FLASH_MS)
@@ -30968,7 +32291,10 @@ def main() -> None:
                                 comm_state["asgn_menu_open"] = False
                                 comm_state["pending_asgn_open_due"] = None
                                 comm_state["pending_asgn_close_due"] = None
-                                comm_state["gol_menu"] = "D8"
+                                radio = str(comm_state.get("asgn_radio", "comb"))
+                                new_val = not bool(comm_state.get("secure_on", False))
+                                _comm_set_profile_value(radio, "secure_on", new_val)
+                                comm_state["secure_on"] = bool(new_val)
                                 handled = True
                             elif col == 4 and row == 7:
                                 comm_trigger_flash("E8", now + OSB_FLASH_MS)
@@ -31020,6 +32346,10 @@ def main() -> None:
                                         close_vded,
                                         is_osb_flashing=lambda label, idx=clicked_status_popup_portal_index: osb_flash_until.get((idx, label), 0) > now,
                                     )
+                                    try:
+                                        setattr(wind_click_context, "mouse_held_ms", int(held_ms))
+                                    except Exception:
+                                        pass
                                     wind_fmt.on_click(event.pos, wind_popup_rect, wind_click_context)
                                 except Exception:
                                     pass
@@ -31173,6 +32503,23 @@ def main() -> None:
                                         portal_format._set_popup_anchor_portal_index(int(anchor_portal_idx))
                                     except Exception:
                                         pass
+                                if hasattr(portal_format, "defer_osb_to_grid_click"):
+                                    try:
+                                        _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
+                                        setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(anchor_portal_idx))
+                                        if bool(portal_format.defer_osb_to_grid_click(zone.label)):
+                                            continue
+                                    except Exception:
+                                        pass
+                                    finally:
+                                        try:
+                                            if _prev_active_portal is None:
+                                                if hasattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX"):
+                                                    delattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX")
+                                            else:
+                                                setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", _prev_active_portal)
+                                        except Exception:
+                                            pass
                                 if hasattr(portal_format, "osb_is_interactive"):
                                     try:
                                         _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
@@ -31243,6 +32590,10 @@ def main() -> None:
                                         close_vded,
                                         is_osb_flashing=lambda label, idx=clicked_status_popup_portal_index: osb_flash_until.get((idx, label), 0) > now,
                                     )
+                                    try:
+                                        setattr(popup_click_context, "mouse_held_ms", int(held_ms))
+                                    except Exception:
+                                        pass
                                     try:
                                         _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
                                         setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(clicked_status_popup_portal_index))
@@ -31319,6 +32670,10 @@ def main() -> None:
                                     close_vded,
                                     is_osb_flashing=lambda label, idx=active_click_portal: osb_flash_until.get((idx, label), 0) > now,
                                 )
+                                try:
+                                    setattr(click_context, "mouse_held_ms", int(held_ms))
+                                except Exception:
+                                    pass
                                 _prev_active_portal = getattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", None)
                                 try:
                                     setattr(formats, "_ACTIVE_RENDER_PORTAL_INDEX", int(active_click_portal))
@@ -31514,8 +32869,10 @@ def main() -> None:
                         frame_state.latest_event_q_depth = int(event_q_depth_before)
             except Exception as exc:
                 print(f"Frame encode error: {exc}")
+        slow_frame_watchdog.end_frame()
 
     try:
+        slow_frame_watchdog.stop()
         if not _fullscreen_mode:
             _capture_windowed_geometry()
         _capture_active_display_index()

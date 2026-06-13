@@ -30,6 +30,11 @@ class Tsd1Format(FormatBase):
     _faa_ils_cache_key: Optional[Tuple[float, int, float, int]] = None
     _faa_ils_by_airport: Dict[str, List[Dict[str, object]]] = {}
     _faa_ils_entries: List[Dict[str, object]] = []
+    _faa_ils_cache_loading: bool = False
+    _faa_ils_cache_target_key: Optional[Tuple[float, int, float, int]] = None
+    _faa_ils_cache_lock = threading.Lock()
+    _terrain_fetch_inflight: Set[Tuple[int, int, int]] = set()
+    _terrain_fetch_lock = threading.Lock()
     _road_overlay_lock = threading.Lock()
     _road_overlay_segments: List[Tuple[float, float, float, float]] = []
     _road_overlay_center: Optional[Tuple[float, float]] = None
@@ -350,11 +355,11 @@ class Tsd1Format(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     @staticmethod
@@ -941,9 +946,9 @@ class Tsd1Format(FormatBase):
             idx = int(state.get("view_idx", 0))
         except Exception:
             idx = 0
-        idx = 1 if idx == 1 else 0
+        idx = max(0, min(3, idx))
         state["view_idx"] = idx
-        return "VSD" if idx == 1 else "HSD"
+        return ["HSD", "VSD", "HSI", "PLOT"][idx]
 
     def _is_vsd(self) -> bool:
         state = self._state()
@@ -965,7 +970,7 @@ class Tsd1Format(FormatBase):
     @staticmethod
     def _gol_popup_rows(rect: pygame.Rect) -> Tuple[int, int]:
         is_5x7 = rect.height >= int(7 * DPI) - 1
-        row_start = 3 if is_5x7 else 2
+        row_start = 3
         return row_start, row_start + 3
 
     def _gol_popup_rect(self, rect: pygame.Rect) -> pygame.Rect:
@@ -1023,7 +1028,7 @@ class Tsd1Format(FormatBase):
             x = int(base_rect.x) if (idx % 2 == 0) else int(base_rect.right - popup_w)
         else:
             x = int(base_rect.x + max(0, (width - popup_w) // 2))
-        return pygame.Rect(x, base_rect.top, popup_w, popup_h)
+        return pygame.Rect(x, base_rect.top - SIDE_OSB_Y_SHIFT, popup_w, popup_h)
 
     def _draw_t2_l3_popup(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
         popup_key = self._active_t2_l3_popup_key()
@@ -1031,19 +1036,14 @@ class Tsd1Format(FormatBase):
             return
         state = self._state()
         if popup_key == "T2":
-            options = ["HSD", "VSD"]
-            try:
-                selected_idx = int(state.get("view_idx", 0))
-            except Exception:
-                selected_idx = 0
-            selected_idx = 1 if selected_idx == 1 else 0
-        else:
-            options = ["EMC1", "EMC2", "EMC3", "EMC4"]
-            try:
-                selected_idx = int(state.get("emc_idx", 3))
-            except Exception:
-                selected_idx = 3
-            selected_idx = max(0, min(len(options) - 1, selected_idx))
+            self._draw_t2_view_strip(surface, rect, context)
+            return
+        options = ["EMC1", "EMC2", "EMC3", "EMC4"]
+        try:
+            selected_idx = int(state.get("emc_idx", 3))
+        except Exception:
+            selected_idx = 3
+        selected_idx = max(0, min(len(options) - 1, selected_idx))
 
         cyan = (0, 255, 255)
         white = (255, 255, 255)
@@ -1073,11 +1073,70 @@ class Tsd1Format(FormatBase):
                 pygame.draw.rect(surface, white, tr.inflate(6, 3), 1)
             surface.blit(txt, tr)
 
+    def _draw_t2_view_strip(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
+        state = self._state()
+        options = ["HSD", "VSD", "HSI", "PLOT"]
+        try:
+            selected_idx = int(state.get("view_idx", 0))
+        except Exception:
+            selected_idx = 0
+        selected_idx = max(0, min(len(options) - 1, selected_idx))
+        state["view_idx"] = selected_idx
+
+        cyan = (0, 255, 255)
+        white = (255, 255, 255)
+        font = get_font(16)
+        rendered: List[Tuple[pygame.Surface, pygame.Rect, bool]] = []
+        text_rects: List[pygame.Rect] = []
+        for idx, (label, opt) in enumerate(zip(["T2", "T3", "T4", "T5"], options)):
+            box = self._osb_box(rect, label)
+            if box.width <= 0 or box.height <= 0:
+                continue
+            flashing = bool(context.is_osb_flashing(label))
+            is_selected = idx == selected_idx
+            color = (0, 0, 0) if flashing else (white if is_selected else cyan)
+            txt = font.render(opt, True, color)
+            tr = txt.get_rect(midtop=(box.centerx, box.top + max(2, int(4 * DPI / 48))))
+            rendered.append((txt, tr, flashing))
+            text_rects.append(tr)
+
+        if text_rects:
+            outline = text_rects[0].copy()
+            for tr in text_rects[1:]:
+                outline.union_ip(tr)
+            outline = outline.inflate(10, 6)
+            surface.fill((0, 0, 0), outline)
+            pygame.draw.rect(surface, white, outline, 1)
+
+        for txt, tr, flashing in rendered:
+            if flashing:
+                pygame.draw.rect(surface, white, tr.inflate(4, 2))
+            surface.blit(txt, tr)
+
     def _handle_t2_l3_popup_click(self, pos: Tuple[int, int], rect: pygame.Rect) -> bool:
         popup_key = self._active_t2_l3_popup_key()
         if popup_key == "":
             return False
         state = self._state()
+        if popup_key == "T2":
+            for idx, label in enumerate(["T2", "T3", "T4", "T5"]):
+                box = self._osb_box(rect, label)
+                if not box.collidepoint(pos):
+                    continue
+                state["view_idx"] = idx
+                if idx == 1:
+                    dclt_state = self._ensure_dclt_state()
+                    dclt_state["dclt_menu_open"] = False
+                    dclt_state["dclt_cat_menu_open"] = False
+                    dclt_state["dclt_submenu"] = ""
+                    dclt_state["dclt_data_selected"] = ""
+                    dclt_state["dclt_data_input"] = ""
+                    dclt_state["dclt_data_dirty"] = False
+                    dclt_state["dclt_data_error"] = ""
+                self._close_t2_l3_popups()
+                return True
+            self._close_t2_l3_popups()
+            return True
         popup = self._gol_popup_rect(rect)
         if not popup.collidepoint(pos):
             self._close_t2_l3_popups()
@@ -1086,20 +1145,6 @@ class Tsd1Format(FormatBase):
         # click position against the full portal rect, not popup-local coords.
         cell = self._popup_cell_at_pos(pos, rect)
         if cell is None:
-            return True
-        if popup_key == "T2":
-            option_cells = self._gol_popup_option_cells(rect, 2)
-            if cell in option_cells:
-                state["view_idx"] = 1 if option_cells.index(cell) == 1 else 0
-                if int(state.get("view_idx", 0)) == 1:
-                    dclt_state = self._ensure_dclt_state()
-                    dclt_state["dclt_menu_open"] = False
-                    dclt_state["dclt_cat_menu_open"] = False
-                    dclt_state["dclt_submenu"] = ""
-                    dclt_state["dclt_data_selected"] = ""
-                    dclt_state["dclt_data_input"] = ""
-                self._close_t2_l3_popups()
-                return True
             return True
         option_cells = self._gol_popup_option_cells(rect, 4)
         if cell in option_cells:
@@ -1145,6 +1190,15 @@ class Tsd1Format(FormatBase):
         state.setdefault("dclt_submenu", "")
         state.setdefault("dclt_data_selected", "")
         state.setdefault("dclt_data_input", "")
+        state.setdefault("dclt_data_dirty", False)
+        state.setdefault("dclt_data_error", "")
+        state.setdefault("dclt_pending_max_field", "")
+        state.setdefault("dclt_pending_max_due_ms", 0)
+        if int(state.get("dclt_defaults_version", 0) or 0) < 2:
+            state["dclt_max_air"] = 16
+            state["dclt_max_sur"] = 32
+            state["dclt_max_eob"] = 16
+            state["dclt_defaults_version"] = 2
         state.setdefault("_popup_anchor_portal_idx", 0)
         state.setdefault("t2_menu_open", False)
         state.setdefault("l3_menu_open", False)
@@ -1156,9 +1210,9 @@ class Tsd1Format(FormatBase):
         state.setdefault("dclt_rgn1_on", True)
         state.setdefault("dclt_rgn2_on", True)
         state.setdefault("dclt_rgn3_on", True)
-        state.setdefault("dclt_max_air", 95)
-        state.setdefault("dclt_max_sur", 86)
-        state.setdefault("dclt_max_eob", 86)
+        state.setdefault("dclt_max_air", 16)
+        state.setdefault("dclt_max_sur", 32)
+        state.setdefault("dclt_max_eob", 16)
         state.setdefault("dclt_ears_on", False)
         state.setdefault("dclt_unrng_on", True)
         state.setdefault("dclt_route_idx", 1)
@@ -1180,6 +1234,26 @@ class Tsd1Format(FormatBase):
                 cat_enabled[key] = bool(cat_enabled.get(key, True))
         state["dclt_cat_enabled"] = cat_enabled
         return state
+
+    def _process_dclt_pending_actions(self, now_ms: Optional[int] = None) -> None:
+        state = self._ensure_dclt_state()
+        field = str(state.get("dclt_pending_max_field", "")).strip()
+        if field not in {"dclt_max_air", "dclt_max_sur", "dclt_max_eob"}:
+            return
+        try:
+            due = int(state.get("dclt_pending_max_due_ms", 0) or 0)
+        except Exception:
+            due = 0
+        now = int(pygame.time.get_ticks()) if now_ms is None else int(now_ms)
+        if due > now:
+            return
+        state["dclt_pending_max_field"] = ""
+        state["dclt_pending_max_due_ms"] = 0
+        state["dclt_submenu"] = "MAX_DATA"
+        state["dclt_data_selected"] = field
+        state["dclt_data_input"] = str(int(state.get(field, 0) or 0))
+        state["dclt_data_dirty"] = False
+        state["dclt_data_error"] = ""
 
     def _popup_cell_rect(self, rect: pygame.Rect, cell: str) -> Optional[pygame.Rect]:
         txt = str(cell).upper().strip()
@@ -1235,6 +1309,7 @@ class Tsd1Format(FormatBase):
         state = self._ensure_dclt_state()
         if not bool(state.get("dclt_menu_open", False)):
             return False
+        self._process_dclt_pending_actions()
         key = str(cell).upper().strip()
         if len(key) < 2:
             return True
@@ -1280,6 +1355,41 @@ class Tsd1Format(FormatBase):
                 return True
             return True
 
+        if submenu == "MAX_DATA":
+            selected = str(state.get("dclt_data_selected", ""))
+            if selected not in {"dclt_max_air", "dclt_max_sur", "dclt_max_eob"}:
+                state["dclt_submenu"] = ""
+                return True
+            digit_cells = {
+                "B3": "1", "C3": "2", "D3": "3",
+                "B4": "4", "C4": "5", "D4": "6",
+                "B5": "7", "C5": "8", "D5": "9",
+                "C6": "0",
+            }
+            if key in digit_cells:
+                self._trigger_local_flash(f"DCLT_{key}")
+                self._append_dclt_data_digit(digit_cells[key])
+                return True
+            if key == "B6":
+                self._trigger_local_flash("DCLT_B6")
+                if self._commit_dclt_data_input(selected):
+                    state["dclt_submenu"] = ""
+                    state["dclt_data_selected"] = ""
+                    state["dclt_data_input"] = ""
+                    state["dclt_data_dirty"] = False
+                return True
+            if key == "D6":
+                self._trigger_local_flash("DCLT_D6")
+                held_ms = 0
+                try:
+                    held_ms = int(getattr(getattr(self, "_last_click_context", None), "mouse_held_ms", 0) or 0)
+                except Exception:
+                    held_ms = 0
+                self._backspace_dclt_data_input(selected, clear=held_ms >= 500)
+                state["dclt_data_error"] = ""
+                return True
+            return True
+
         main_cells = ["B3", "C3", "D3", "B4", "C4", "D4", "B5", "C5", "D5", "B6", "C6", "D6"]
         cell_action = {name: idx for idx, name in enumerate(main_cells[:12])}
         action_idx = cell_action.get(key, -1)
@@ -1301,16 +1411,16 @@ class Tsd1Format(FormatBase):
             state["dclt_submenu"] = "RGNS"
             state["dclt_data_selected"] = ""
             state["dclt_data_input"] = ""
+            state["dclt_data_dirty"] = False
+            state["dclt_data_error"] = ""
             return True
         if action_idx in {4, 5, 6}:  # MAX AIR/SUR/EOB
             field = {4: "dclt_max_air", 5: "dclt_max_sur", 6: "dclt_max_eob"}[action_idx]
-            if str(state.get("dclt_data_selected", "")) == field:
-                self._commit_dclt_data_input(field)
-                state["dclt_data_selected"] = ""
-                state["dclt_data_input"] = ""
-            else:
-                state["dclt_data_selected"] = field
-                state["dclt_data_input"] = ""
+            self._trigger_local_flash(f"DCLT_{key}")
+            state["dclt_pending_max_field"] = field
+            state["dclt_pending_max_due_ms"] = int(pygame.time.get_ticks()) + int(getattr(self, "_LOCAL_FLASH_MS", 250))
+            state["dclt_data_dirty"] = False
+            state["dclt_data_error"] = ""
             return True
         if action_idx == 7:  # EARS
             _toggle_state("dclt_ears_on")
@@ -1322,6 +1432,8 @@ class Tsd1Format(FormatBase):
             state["dclt_submenu"] = "ROUTE"
             state["dclt_data_selected"] = ""
             state["dclt_data_input"] = ""
+            state["dclt_data_dirty"] = False
+            state["dclt_data_error"] = ""
             return True
         if action_idx == 10:  # LAR
             _toggle_state("dclt_lar_on")
@@ -1353,6 +1465,7 @@ class Tsd1Format(FormatBase):
     def _draw_dclt_popup(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
         state = self._ensure_dclt_state()
         now_ms = int(pygame.time.get_ticks())
+        self._process_dclt_pending_actions(now_ms)
         cyan = (0, 255, 255)
         white = (255, 255, 255)
         popup = self._gol_popup_rect(rect)
@@ -1434,18 +1547,113 @@ class Tsd1Format(FormatBase):
             lines = label.split("\n") + [value_text]
             y = box.centery - (sum(font.render(t, True, cyan).get_height() for t in lines) + max(0, len(lines) - 1)) // 2
             value_rect: Optional[pygame.Rect] = None
+            flashing = bool(self._local_flash_active(f"DCLT_{cell}", now_ms))
+            rendered_rects: List[pygame.Rect] = []
+            rendered_surfs: List[pygame.Surface] = []
             for idx, line in enumerate(lines):
-                color = white if (selected and idx == len(lines) - 1) else cyan
+                color = (0, 0, 0) if flashing else (white if (selected and idx == len(lines) - 1) else cyan)
                 surf = font.render(str(line), True, color)
                 rr = surf.get_rect(centerx=box.centerx, y=y)
-                surface.blit(surf, rr)
+                rendered_surfs.append(surf)
+                rendered_rects.append(rr)
                 if idx == len(lines) - 1:
                     value_rect = rr
                 y += surf.get_height() + 1
+            if flashing and rendered_rects:
+                flash_rect = rendered_rects[0].copy()
+                for rr in rendered_rects[1:]:
+                    flash_rect.union_ip(rr)
+                pygame.draw.rect(surface, white, flash_rect.inflate(6, 3), 0)
+            for surf, rr in zip(rendered_surfs, rendered_rects):
+                surface.blit(surf, rr)
             if selected and value_rect is not None:
                 pygame.draw.rect(surface, white, value_rect.inflate(6, 3), 1)
 
+        def _draw_keypad_digit(cell: str, digit: str) -> None:
+            box = self._popup_cell_rect(rect, cell)
+            if box is None:
+                return
+            bs = ButtonState(
+                button_id=f"TSD1_DCLT_NUM_{cell}",
+                button_type=ButtonType.MOMENTARY_SINGLE,
+                text=str(digit),
+                h_align="center",
+                v_align="center",
+                padding=OSB_PADDING,
+                font_size=16,
+                flash_until_ms=1 if self._local_flash_active(f"DCLT_{cell}", now_ms) or context.is_osb_flashing(cell) else 0,
+            )
+            render_button(surface, box, bs, get_font, now_ms)
+
+        def _draw_max_submit(cell: str, field_key: str) -> None:
+            box = self._popup_cell_rect(rect, cell)
+            if box is None:
+                return
+            labels = {
+                "dclt_max_air": ("MAX", "AIR"),
+                "dclt_max_sur": ("MAX", "SUR"),
+                "dclt_max_eob": ("MAX", "EOB"),
+            }
+            field_label = labels.get(str(field_key), ("MAX", ""))
+            try:
+                current_value = int(state.get(field_key, 0) or 0)
+            except Exception:
+                current_value = 0
+            pending = str(state.get("dclt_data_input", ""))
+            value_text = pending if pending != "" else str(current_value)
+            font = get_font(14)
+            lines = [str(value_text), field_label[0], field_label[1]]
+            rendered = [
+                font.render(lines[0], True, white),
+                font.render(lines[1], True, cyan),
+                font.render(lines[2], True, cyan),
+            ]
+            total_h = sum(s.get_height() for s in rendered) + 2
+            y = box.centery - total_h // 2
+            rects: List[pygame.Rect] = []
+            for surf in rendered:
+                rr = surf.get_rect(centerx=box.centerx, y=y)
+                rects.append(rr)
+                surface.blit(surf, rr)
+                y += surf.get_height() + 1
+            if rects:
+                pygame.draw.rect(surface, white, rects[0].inflate(6, 3), 1)
+            if self._local_flash_active(f"DCLT_{cell}", now_ms) and rects:
+                flash_rect = rects[0].copy()
+                for rr in rects[1:]:
+                    flash_rect.union_ip(rr)
+                pygame.draw.rect(surface, white, flash_rect.inflate(6, 3), 0)
+                for line, rr in zip(lines, rects):
+                    surface.blit(font.render(str(line), True, (0, 0, 0)), rr)
+
         submenu = str(state.get("dclt_submenu", "")).upper().strip()
+        if submenu == "MAX_DATA":
+            selected = str(state.get("dclt_data_selected", ""))
+            for cell, digit in (
+                ("B3", "1"), ("C3", "2"), ("D3", "3"),
+                ("B4", "4"), ("C4", "5"), ("D4", "6"),
+                ("B5", "7"), ("C5", "8"), ("D5", "9"),
+                ("C6", "0"),
+            ):
+                _draw_keypad_digit(cell, digit)
+            _draw_max_submit("B6", selected)
+            if self._local_flash_active("DCLT_D6", now_ms):
+                box = self._popup_cell_rect(rect, "D6")
+                if box is not None:
+                    bs = ButtonState(
+                        button_id="TSD1_DCLT_BACK",
+                        button_type=ButtonType.MOMENTARY_SINGLE,
+                        text="BACK",
+                        h_align="center",
+                        v_align="center",
+                        padding=OSB_PADDING,
+                        font_size=14,
+                        flash_until_ms=1,
+                    )
+                    render_button(surface, box, bs, get_font, now_ms)
+            else:
+                _draw_page("D6", "BACK")
+            return
         if submenu == "RGNS":
             _draw_toggle("B3", "RGN1", bool(state.get("dclt_rgn1_on", True)), "TSD1_DCLT_RGN1")
             _draw_toggle("C3", "RGN2", bool(state.get("dclt_rgn2_on", True)), "TSD1_DCLT_RGN2")
@@ -1477,25 +1685,91 @@ class Tsd1Format(FormatBase):
 
     def _dclt_data_limits(self, field_key: str) -> Tuple[int, int]:
         key = str(field_key).strip().lower()
-        if key == "dclt_max_air":
-            return 10, 95
-        if key == "dclt_max_sur":
-            return 1, 86
-        if key == "dclt_max_eob":
-            return 0, 86
+        if key in {"dclt_max_air", "dclt_max_sur", "dclt_max_eob"}:
+            return 0, 96
         return 0, 999
 
-    def _commit_dclt_data_input(self, field_key: str) -> None:
+    def _dclt_current_max_values(self) -> Tuple[int, int, int]:
         state = self._ensure_dclt_state()
+        try:
+            air = int(state.get("dclt_max_air", 16) or 0)
+        except Exception:
+            air = 16
+        try:
+            sur = int(state.get("dclt_max_sur", 32) or 0)
+        except Exception:
+            sur = 32
+        try:
+            eob = int(state.get("dclt_max_eob", 16) or 0)
+        except Exception:
+            eob = 16
+        return air, sur, eob
+
+    def _append_dclt_data_digit(self, digit: str) -> None:
+        state = self._ensure_dclt_state()
+        current = str(state.get("dclt_data_input", ""))
+        if not bool(state.get("dclt_data_dirty", False)):
+            current = ""
+        if len(current) >= 3:
+            return
+        state["dclt_data_input"] = current + str(digit)[-1:]
+        state["dclt_data_dirty"] = True
+        state["dclt_data_error"] = ""
+
+    def _backspace_dclt_data_input(self, field_key: str, *, clear: bool = False) -> None:
+        state = self._ensure_dclt_state()
+        current = str(state.get("dclt_data_input", ""))
+        if not bool(state.get("dclt_data_dirty", False)):
+            try:
+                current = str(int(state.get(field_key, 0) or 0))
+            except Exception:
+                current = ""
+        state["dclt_data_input"] = "" if bool(clear) else current[:-1]
+        state["dclt_data_dirty"] = True
+        state["dclt_data_error"] = ""
+
+    def _commit_dclt_data_input(self, field_key: str) -> bool:
+        state = self._ensure_dclt_state()
+        key = str(field_key).strip().lower()
+        if key not in {"dclt_max_air", "dclt_max_sur", "dclt_max_eob"}:
+            return False
         raw = "".join(ch for ch in str(state.get("dclt_data_input", "")) if ch.isdigit())
-        if raw != "":
+        if raw == "":
+            if bool(state.get("dclt_data_dirty", False)):
+                value = 0
+            else:
+                try:
+                    value = int(state.get(key, 0) or 0)
+                except Exception:
+                    value = 0
+        else:
             try:
                 value = int(raw)
             except Exception:
-                value = int(state.get(field_key, 0) or 0)
-            lo, hi = self._dclt_data_limits(field_key)
-            state[field_key] = max(int(lo), min(int(hi), int(value)))
+                state["dclt_data_error"] = "INVALID"
+                return False
+        lo, hi = self._dclt_data_limits(key)
+        if value < int(lo) or value > int(hi):
+            state["dclt_data_error"] = "INVALID"
+            return False
+        air, sur, eob = self._dclt_current_max_values()
+        if key == "dclt_max_air":
+            air = value
+        elif key == "dclt_max_sur":
+            sur = value
+            eob = max(0, min(int(eob), int(sur)))
+        elif key == "dclt_max_eob":
+            eob = value
+        if air + sur > 96 or eob > sur:
+            state["dclt_data_error"] = "INVALID"
+            return False
+        state[key] = int(value)
+        if key == "dclt_max_sur":
+            state["dclt_max_eob"] = int(eob)
         state["dclt_data_input"] = ""
+        state["dclt_data_dirty"] = False
+        state["dclt_data_error"] = ""
+        return True
 
     def _apply_dclt_key(self, key: str) -> bool:
         state = self._ensure_dclt_state()
@@ -1505,11 +1779,15 @@ class Tsd1Format(FormatBase):
         token = str(key).upper().strip()
         current = str(state.get("dclt_data_input", ""))
         if token in {"KP_BACK", "BACK", "BACKSPACE"}:
-            state["dclt_data_input"] = current[:-1]
+            self._backspace_dclt_data_input(selected)
             return True
         if token in {"ENTER", "RETURN", "KP_ENTER"}:
-            self._commit_dclt_data_input(selected)
-            state["dclt_data_selected"] = ""
+            if self._commit_dclt_data_input(selected):
+                state["dclt_submenu"] = ""
+                state["dclt_data_selected"] = ""
+                state["dclt_data_input"] = ""
+                state["dclt_data_dirty"] = False
+                state["dclt_data_error"] = ""
             return True
         if token.startswith("KP_") and len(token) == 4 and token[-1].isdigit():
             digit = token[-1]
@@ -1517,9 +1795,7 @@ class Tsd1Format(FormatBase):
             digit = token
         else:
             return False
-        if len(current) >= 3:
-            return True
-        state["dclt_data_input"] = current + digit
+        self._append_dclt_data_digit(digit)
         return True
 
     def _commit_atk_input(self) -> None:
@@ -1651,8 +1927,17 @@ class Tsd1Format(FormatBase):
         wx, wy = cls._latlon_to_world_px(float(lat), float(lon), z)
         tx = int(math.floor(wx / 256.0))
         ty = int(math.floor(wy / 256.0))
-        tile = Asr1Format._fetch_terrain_tile(z, tx, ty)
+        terrain_key = (int(z), int(tx), int(ty))
+        tile = None
+        try:
+            with Asr1Format._terrain_tile_cache_lock:
+                cached = Asr1Format._terrain_tile_cache.get(terrain_key)
+                if cached is not None:
+                    tile = cached.copy()
+        except Exception:
+            tile = None
         if tile is None:
+            cls._request_terrain_tile_async(int(z), int(tx), int(ty))
             return None
         px = int(wx - (float(tx) * 256.0))
         py = int(wy - (float(ty) * 256.0))
@@ -1664,6 +1949,27 @@ class Tsd1Format(FormatBase):
             return float(elev_m)
         except Exception:
             return None
+
+    @classmethod
+    def _request_terrain_tile_async(cls, z: int, tx: int, ty: int) -> None:
+        key = (int(z), int(tx), int(ty))
+        with cls._terrain_fetch_lock:
+            if key in cls._terrain_fetch_inflight:
+                return
+            cls._terrain_fetch_inflight.add(key)
+
+        def _worker() -> None:
+            try:
+                Asr1Format._fetch_terrain_tile(int(z), int(tx), int(ty))
+            finally:
+                with cls._terrain_fetch_lock:
+                    cls._terrain_fetch_inflight.discard(key)
+
+        try:
+            threading.Thread(target=_worker, name="TerrainTileFetch", daemon=True).start()
+        except Exception:
+            with cls._terrain_fetch_lock:
+                cls._terrain_fetch_inflight.discard(key)
 
     def _ownship_agl_m(self) -> float:
         state = self._state()
@@ -1993,8 +2299,33 @@ class Tsd1Format(FormatBase):
             cls._faa_ils_cache_key = None
             cls._faa_ils_by_airport = {}
             cls._faa_ils_entries = []
+            with cls._faa_ils_cache_lock:
+                cls._faa_ils_cache_loading = False
+                cls._faa_ils_cache_target_key = None
             return cls._faa_ils_by_airport
         if cls._faa_ils_cache_key == cache_key:
+            return cls._faa_ils_by_airport
+
+        if threading.current_thread() is threading.main_thread():
+            start_loader = False
+            with cls._faa_ils_cache_lock:
+                if (not cls._faa_ils_cache_loading) or cls._faa_ils_cache_target_key != cache_key:
+                    cls._faa_ils_cache_loading = True
+                    cls._faa_ils_cache_target_key = cache_key
+                    start_loader = True
+            if start_loader:
+                try:
+                    worker = threading.Thread(
+                        target=cls._load_faa_ils_by_airport,
+                        name="TsdFaaIlsLoader",
+                        daemon=True,
+                    )
+                    worker.start()
+                    print("[FAA][ILS_DATA] async load started")
+                except Exception:
+                    with cls._faa_ils_cache_lock:
+                        cls._faa_ils_cache_loading = False
+                        cls._faa_ils_cache_target_key = None
             return cls._faa_ils_by_airport
 
         runway_end_info: Dict[Tuple[str, str], Dict[str, object]] = {}
@@ -2075,9 +2406,12 @@ class Tsd1Format(FormatBase):
             by_airport[airport_ident] = vals
         entries.sort(key=lambda x: (str(x.get("airport_ident", "")), str(x.get("runway_end_id", "")), float(x.get("loc_freq_mhz", 0.0))))
 
-        cls._faa_ils_cache_key = cache_key
-        cls._faa_ils_by_airport = by_airport
-        cls._faa_ils_entries = entries
+        with cls._faa_ils_cache_lock:
+            cls._faa_ils_cache_key = cache_key
+            cls._faa_ils_by_airport = by_airport
+            cls._faa_ils_entries = entries
+            cls._faa_ils_cache_loading = False
+            cls._faa_ils_cache_target_key = None
         print(f"[FAA][ILS_DATA] loaded airports={len(by_airport)} entries={len(entries)}")
         return cls._faa_ils_by_airport
 
@@ -2546,45 +2880,31 @@ class Tsd1Format(FormatBase):
         own_lon = cls._safe_float(lon)
         if own_lat is None or own_lon is None:
             return None
-        airports = cls._load_airports_by_ident()
-        military_airports: List[Tuple[float, str, Dict[str, object]]] = []
-        for ident, airport in airports.items():
-            if not isinstance(airport, dict) or not bool(airport.get("is_military_name", False)):
-                continue
-            apt_lat = cls._safe_float(airport.get("lat"))
-            apt_lon = cls._safe_float(airport.get("lon"))
-            if apt_lat is None or apt_lon is None:
-                continue
-            _bearing, dist_nm = cls._bearing_and_distance_nm(float(own_lat), float(own_lon), float(apt_lat), float(apt_lon))
-            military_airports.append((float(dist_nm), str(ident), airport))
-        if len(military_airports) <= 0:
+        runways = cls._load_runways()
+        if len(runways) <= 0:
             return None
-        military_airports.sort(key=lambda item: item[0])
-
-        candidate_airports = military_airports[:80]
-        candidate_idents = {ident for _dist, ident, _airport in candidate_airports}
-        candidate_runways: Dict[str, List[Dict[str, object]]] = {ident: [] for ident in candidate_idents}
-        path = Path(resource_path(Path("DATA") / "runways.csv"))
-        if not path.exists():
-            return None
-        try:
-            with path.open("r", encoding="utf-8-sig", newline="") as fh:
-                reader = csv.DictReader(fh)
-                for row in reader:
-                    ident = str(row.get("airport_ident") or "").strip().upper()
-                    if ident not in candidate_idents:
-                        continue
-                    runway = cls._runway_record_from_row(row, airports.get(ident), True)
-                    if runway is not None:
-                        candidate_runways.setdefault(ident, []).append(runway)
-        except Exception:
-            return None
-        for _dist, ident, _airport in candidate_airports:
-            runways = candidate_runways.get(ident, [])
-            if len(runways) <= 0:
+        by_airport: Dict[str, List[Dict[str, object]]] = {}
+        airport_dist: Dict[str, float] = {}
+        for runway in runways:
+            if not isinstance(runway, dict) or not bool(runway.get("is_military", False)):
                 continue
-            return dict(max(runways, key=lambda rw: float(rw.get("length_ft", 0.0) or 0.0)))
-        return None
+            ident = str(runway.get("airport_ident") or "").strip().upper()
+            if ident == "":
+                continue
+            mid_lat = cls._safe_float(runway.get("mid_lat"))
+            mid_lon = cls._safe_float(runway.get("mid_lon"))
+            if mid_lat is None or mid_lon is None:
+                continue
+            _bearing, dist_nm = cls._bearing_and_distance_nm(float(own_lat), float(own_lon), float(mid_lat), float(mid_lon))
+            by_airport.setdefault(ident, []).append(runway)
+            airport_dist[ident] = min(float(dist_nm), float(airport_dist.get(ident, float("inf"))))
+        if len(by_airport) <= 0:
+            return None
+        nearest_ident = min(by_airport.keys(), key=lambda ident: float(airport_dist.get(ident, float("inf"))))
+        candidates = by_airport.get(nearest_ident, [])
+        if len(candidates) <= 0:
+            return None
+        return dict(max(candidates, key=lambda rw: float(rw.get("length_ft", 0.0) or 0.0)))
 
     @classmethod
     def spawn_point_for_runway(cls, runway: Dict[str, object]) -> Optional[Dict[str, float]]:
@@ -4118,10 +4438,10 @@ class Tsd1Format(FormatBase):
         candidate_items.sort(key=lambda item: float(item.get("dist_nm", 1e9)))
 
         try:
-            max_air_tracks = int(dclt_state.get("dclt_max_air", 95))
+            max_air_tracks = int(dclt_state.get("dclt_max_air", 16))
         except Exception:
-            max_air_tracks = 95
-        max_air_tracks = max(10, min(95, max_air_tracks))
+            max_air_tracks = 16
+        max_air_tracks = max(0, min(96, max_air_tracks))
         if max_air_tracks < len(candidate_items):
             candidate_items = candidate_items[:max_air_tracks]
         budget = len(candidate_items)
@@ -4489,10 +4809,10 @@ class Tsd1Format(FormatBase):
 
         candidate_items.sort(key=lambda item: float(item.get("dist_nm", 1e9)))
         try:
-            max_air_tracks = int(dclt_state.get("dclt_max_air", 95))
+            max_air_tracks = int(dclt_state.get("dclt_max_air", 16))
         except Exception:
-            max_air_tracks = 95
-        max_air_tracks = max(10, min(95, max_air_tracks))
+            max_air_tracks = 16
+        max_air_tracks = max(0, min(96, max_air_tracks))
         if max_air_tracks < len(candidate_items):
             candidate_items = candidate_items[:max_air_tracks]
 
@@ -4831,7 +5151,7 @@ class Tsd1Format(FormatBase):
 
         # T2/L3: green header + underline with cyan changing value.
         t2_box = self._osb_box(rect, "T2")
-        if t2_box is not None:
+        if t2_box is not None and not bool(self._state().get("t2_menu_open", False)):
             self._draw_header_value_button(
                 surface,
                 t2_box,
@@ -4945,7 +5265,7 @@ class Tsd1Format(FormatBase):
             )
 
         t2_box = self._osb_box(rect, "T2")
-        if t2_box is not None:
+        if t2_box is not None and not bool(self._state().get("t2_menu_open", False)):
             self._draw_header_value_button(
                 surface,
                 t2_box,
@@ -5389,6 +5709,10 @@ class Tsd1Format(FormatBase):
         surface.set_clip(prev_clip)
 
     def on_click(self, pos: Tuple[int, int], rect: pygame.Rect, context: FormatContext) -> bool:
+        try:
+            setattr(self, "_last_click_context", context)
+        except Exception:
+            pass
         self._set_popup_anchor_portal_index(getattr(context, "portal_index", None))
         if self._handle_t2_l3_popup_click(pos, rect):
             return True
@@ -5434,6 +5758,20 @@ class Tsd1Format(FormatBase):
         self._set_popup_anchor_portal_index(getattr(context, "portal_index", None))
         state = self._state()
         dclt_state = self._ensure_dclt_state()
+        if bool(state.get("t2_menu_open", False)) and label in {"T2", "T3", "T4", "T5"}:
+            idx = {"T2": 0, "T3": 1, "T4": 2, "T5": 3}.get(label, 0)
+            state["view_idx"] = idx
+            if idx == 1:
+                dclt_state["dclt_menu_open"] = False
+                dclt_state["dclt_cat_menu_open"] = False
+                dclt_state["dclt_submenu"] = ""
+                dclt_state["dclt_data_selected"] = ""
+                dclt_state["dclt_data_input"] = ""
+                dclt_state["dclt_data_dirty"] = False
+                dclt_state["dclt_data_error"] = ""
+            state["t2_menu_open"] = False
+            state["l3_menu_open"] = False
+            return True
         if label == "R5":
             self._close_t2_l3_popups()
             is_open = bool(dclt_state.get("dclt_menu_open", False))
@@ -5443,6 +5781,8 @@ class Tsd1Format(FormatBase):
                 dclt_state["dclt_submenu"] = ""
                 dclt_state["dclt_data_selected"] = ""
                 dclt_state["dclt_data_input"] = ""
+                dclt_state["dclt_data_dirty"] = False
+                dclt_state["dclt_data_error"] = ""
             return True
         if label == "T1":
             context.request_vded(context.portal_index, "MENU")
@@ -5460,7 +5800,7 @@ class Tsd1Format(FormatBase):
                 now_ms = int(pygame.time.get_ticks())
                 state["vsd_l3_pending_toggle_due_ms"] = int(now_ms + int(self._VSD_L3_FLASH_DELAY_MS))
                 return True
-            if label in {"T5", "L4", "L5"}:
+            if label in {"T3", "T4", "T5", "L4", "L5"}:
                 return True
             return False
         if bool(dclt_state.get("dclt_menu_open", False)) and self._dclt_covers_osb_label(label):
@@ -5509,6 +5849,8 @@ class Tsd1Format(FormatBase):
         return False
 
     def osb_is_interactive(self, label: str) -> bool:
+        if bool(self._state().get("t2_menu_open", False)) and label in {"T2", "T3", "T4", "T5"}:
+            return True
         if self._is_vsd():
             return label in {"T1", "T2", "T5", "L3"}
         if label == "L4":

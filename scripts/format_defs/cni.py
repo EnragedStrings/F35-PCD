@@ -53,11 +53,11 @@ class CniFormat(FormatBase):
         if side == "L":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.x, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.x, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         if side == "R":
             if idx < 1 or idx > side_count:
                 return None
-            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
+            return pygame.Rect(rect.right - GRID_CELL_W, rect.y + top_offset - SIDE_OSB_Y_SHIFT + (idx - 1) * DISPLAY_OSB_H, GRID_CELL_W, DISPLAY_OSB_H)
         return None
 
     @staticmethod
@@ -66,12 +66,18 @@ class CniFormat(FormatBase):
         row = int(cell[1:]) - 1
         return pygame.Rect(rect.x + col * GRID_CELL_W, rect.y + row * GRID_CELL_H, GRID_CELL_W, GRID_CELL_H)
 
+    @staticmethod
+    def _popup_cell_rect(rect: pygame.Rect, cell: str) -> pygame.Rect:
+        col = ord(cell[0].upper()) - ord("A")
+        row = int(cell[1:]) - 1
+        return pygame.Rect(rect.x + col * GRID_CELL_W, rect.y - SIDE_OSB_Y_SHIFT + row * GRID_CELL_H, GRID_CELL_W, GRID_CELL_H)
+
     def _start_popup_rows(self, rect: pygame.Rect) -> Tuple[int, int]:
         return 3, 6
 
     def _start_popup_rect(self, rect: pygame.Rect) -> pygame.Rect:
         row_start, row_end = self._start_popup_rows(rect)
-        return self._cell_rect(rect, f"B{row_start}").union(self._cell_rect(rect, f"D{row_end}"))
+        return self._popup_cell_rect(rect, f"B{row_start}").union(self._popup_cell_rect(rect, f"D{row_end}"))
 
     def _confirm_popup_rect(self, rect: pygame.Rect) -> pygame.Rect:
         width = max(1, int(round(4.25 * DPI)))
@@ -118,7 +124,7 @@ class CniFormat(FormatBase):
         cyan = (0, 255, 255)
         option_cells = ["B3", "C3", "D3", "B4"]
         for cell in option_cells:
-            box = self._cell_rect(rect, cell)
+            box = self._popup_cell_rect(rect, cell)
             surface.fill((0, 0, 0), box)
             pygame.draw.rect(surface, cyan, box, 1)
         font = get_font(16)
@@ -127,7 +133,7 @@ class CniFormat(FormatBase):
             if idx >= len(option_cells):
                 break
             cell = option_cells[idx]
-            box = self._cell_rect(rect, cell)
+            box = self._popup_cell_rect(rect, cell)
             selected = selected_norm == str(opt).upper().strip()
             txt = font.render(str(opt), True, (255, 255, 255) if selected else cyan)
             tr = txt.get_rect(center=box.center)
@@ -397,7 +403,7 @@ class CniFormat(FormatBase):
         cyan = (0, 255, 255)
         option_cells = ["B3", "C3", "D3", "B4", "C4"]
         for cell in option_cells:
-            box = self._cell_rect(rect, cell)
+            box = self._popup_cell_rect(rect, cell)
             surface.fill((0, 0, 0), box)
             pygame.draw.rect(surface, cyan, box, 1)
         font = get_font(16)
@@ -405,7 +411,7 @@ class CniFormat(FormatBase):
             if idx >= len(option_cells):
                 break
             cell = option_cells[idx]
-            box = self._cell_rect(rect, cell)
+            box = self._popup_cell_rect(rect, cell)
             selected = str(self._shared_start).upper().strip() == str(opt).upper().strip()
             txt = font.render(str(opt), True, (255, 255, 255) if selected else cyan)
             tr = txt.get_rect(center=box.center)
@@ -736,7 +742,7 @@ class CniFormat(FormatBase):
         if (not bool(self._shared_t2_popup_open)) and (not bool(self._shared_l1_class_popup_open)):
             return False
         rel_x = max(0, pos[0] - rect.x)
-        rel_y = max(0, pos[1] - rect.y)
+        rel_y = max(0, pos[1] - (rect.y - SIDE_OSB_Y_SHIFT))
         col = max(0, min(4, int(rel_x // GRID_CELL_W)))
         row = max(0, min(7, int(rel_y // GRID_CELL_H)))
         cell = f"{chr(ord('A') + col)}{row + 1}"
