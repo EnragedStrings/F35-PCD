@@ -78,54 +78,7 @@ from button_types import (
     button_executes_after_flash,
     render_button,
 )
-try:
-    from dist_runtime import *  # type: ignore  # noqa: F401,F403
-    from dist_runtime import dist_set_secrets  # type: ignore
-except Exception:
-    from dist_runtime_stub import *  # type: ignore  # noqa: F401,F403
-    from dist_runtime_stub import dist_set_secrets  # type: ignore
-
-try:
-    from dist_secret_material import (
-        DistSecretMaterial,
-        default_dist_secret_paths,
-        load_dist_secrets,
-        verify_credential_hash as _dist_verify_credential_hash,
-    )
-except Exception as _dist_import_exc:
-    _DIST_IMPORT_ERROR_TEXT = str(_dist_import_exc)
-    @dataclass(frozen=True)
-    class DistSecretMaterial:  # type: ignore[no-redef]
-        admin_cred_salt: str = ""
-        admin_username_hash: str = ""
-        admin_password_hash: str = ""
-        metadata_seal_key: str = ""
-        metadata_rsa_e: int = 65537
-        metadata_rsa_n_hex: str = ""
-        metadata_rsa_d_hex: str = ""
-        machine_key_salt: str = ""
-        auth_bypass_window_s: int = 45
-        varipass_api_key: str = ""
-        supabase_url: str = ""
-        supabase_api_key: str = ""
-        supabase_table: str = "pcd_link16_nets"
-
-    def default_dist_secret_paths(base_dir: Optional[Path] = None, exe_path: Optional[Path] = None) -> List[Path]:  # type: ignore[no-redef]
-        _ = (base_dir, exe_path)
-        return []
-
-    def load_dist_secrets(search_paths: Optional[List[Path]] = None) -> Tuple[Optional[DistSecretMaterial], str]:  # type: ignore[no-redef]
-        _ = search_paths
-        return None, f"dist_secret_material unavailable: {_DIST_IMPORT_ERROR_TEXT}"
-
-    def _dist_verify_credential_hash(expected_hash: object, salt: object, value: object) -> bool:  # type: ignore[no-redef]
-        _ = (expected_hash, salt, value)
-        return False
-
-    try:
-        print(f"[DIST][IMPORT] dist_secret_material unavailable, continuing without DIST secrets: {_DIST_IMPORT_ERROR_TEXT}")
-    except Exception:
-        pass
+from dist_runtime_stub import *  # type: ignore  # noqa: F401,F403
 from formats import (
     FormatContext,
     create_format,
@@ -916,28 +869,7 @@ FAA_AIRAC_SEARCH_WINDOW_CYCLES = 24
 FAA_AIRAC_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 FAA_AIRAC_CSV_ZIP_URL_TEMPLATE = "https://nfdc.faa.gov/webContent/28DaySub/extra/{date_token}_CSV.zip"
 USERS_ROOT_PATH = writable_path("USERS")
-DIST_WEBHOOK_URL = str(os.environ.get("F35_DIST_WEBHOOK_URL", "")).strip()
-DIST_METADATA_VERSION = 1
-DIST_METADATA_BEGIN = b"\n[F35_DIST_METADATA_BEGIN]\n"
-DIST_METADATA_END = b"\n[F35_DIST_METADATA_END]\n"
-DIST_METADATA_SEAL_VERSION = 4
-DIST_METADATA_SIG_ALG = "RSA-SHA256-RAW-V1"
-DIST_METADATA_RSA_E_PUBLIC = 65537
-DIST_METADATA_RSA_N_HEX_PUBLIC = (
-    "dff9166dac88debf0cde911ada32c8928c73c6540c32cd198d7115bafbf23a205df1086bfea07f728104465cc4fbfb17"
-    "f544f1563c1f58245e816a164467ef296320d7225658ed027e6c01d32573b55575cb099438f6f98918a830f7df831bb9"
-    "91005fed6ce746206cbf18e3812f97ddcad64ed7451944e807258cf5fd7c293d45cbcbe7daf6e2ea32ac4ad3de48e5304"
-    "fd125c3370689a5c7a24c5fa73fc9aab3bb87b39e02dbe87cc0296b1799b7e4804fe98a0c13f69349c9e308aea3968519"
-    "bffc4b5b35f7c1c2e9209ac84c69c09cbd938c5cfa57d78ee66d7bdc48044ea7aa2d8051af4d5ff61854a36c638993293"
-    "7141a846ad4ae0b084de8e074bd97"
-)
-DIST_MACHINE_KEY_DOMAIN = "F35_DIST_MACHINE_KEY_V2"
-DIST_AUTH_BYPASS_TS_ENV = "F35_DIST_AUTH_BYPASS_TS"
-DIST_AUTH_BYPASS_SIG_ENV = "F35_DIST_AUTH_BYPASS_SIG"
-DIST_AUTH_BYPASS_WINDOW_DEFAULT_S = 45
 VARIPASS_API_URL = "https://api.varipass.org"
-_DIST_SECRETS: Optional[DistSecretMaterial] = None
-_DIST_SECRETS_ERROR = ""
 _VARIPASS_API_KEY_CACHE: Optional[str] = None
 _SUPABASE_URL_CACHE: Optional[str] = None
 _SUPABASE_API_KEY_CACHE: Optional[str] = None
@@ -2479,19 +2411,10 @@ def _discover_frozen_version() -> str:
 
 
 def _window_title_text(dist_metadata: Optional[Dict[str, object]] = None) -> str:
-    developer_title = "F-35 PCD DEVELOPER VERSION"
+    _ = dist_metadata
+    source_title = "F-35 PCD Simulator"
     if not is_frozen():
-        return developer_title
-    metadata_obj: Dict[str, object]
-    if isinstance(dist_metadata, dict):
-        metadata_obj = _dist_normalize_metadata(dist_metadata)
-    else:
-        try:
-            metadata_obj = _dist_load_effective_metadata(Path(sys.executable).resolve())
-        except Exception:
-            metadata_obj = _dist_default_metadata()
-    if bool(metadata_obj.get("require_user_key", True)):
-        return developer_title
+        return source_title
     return f"F-35 PCD Ver {_discover_frozen_version()}"
 
 
@@ -2966,36 +2889,8 @@ def _cached_plugin_read_json(path: Path, fallback: Optional[dict] = None, ttl_s:
     return data
 
 def _seclvl_has_dist_credentials(seclvl_state: Dict[str, object]) -> bool:
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is None:
-        return False
-    if not bool(seclvl_state.get("logged_in", False)):
-        return False
-    user_committed = str(seclvl_state.get("user_committed", ""))
-    pass_committed = str(seclvl_state.get("pass_committed", ""))
-    if user_committed.strip() == "" or pass_committed.strip() == "":
-        return False
-    user_expected = str(secrets_obj.admin_username_hash).strip()
-    pw_expected = str(secrets_obj.admin_password_hash).strip()
-    cache_raw = seclvl_state.get("_dist_cred_cache", {})
-    cache = cache_raw if isinstance(cache_raw, dict) else {}
-    cache_key = (
-        user_expected,
-        pw_expected,
-        user_committed,
-        pass_committed,
-    )
-    if tuple(cache.get("key", ())) == cache_key:
-        return bool(cache.get("ok", False))
-
-    user_ok = _dist_admin_credential_matches(user_expected, user_committed)
-    pw_ok = _dist_admin_credential_matches(pw_expected, pass_committed)
-    ok = bool(user_ok) and bool(pw_ok)
-    seclvl_state["_dist_cred_cache"] = {
-        "key": cache_key,
-        "ok": ok,
-    }
-    return ok
+    _ = seclvl_state
+    return False
 
 
 def _seclvl_pmd_file_state() -> Tuple[str, bool]:
@@ -3019,45 +2914,10 @@ def _varipass_api_key() -> str:
     global _VARIPASS_API_KEY_CACHE
     if _VARIPASS_API_KEY_CACHE is not None:
         return _VARIPASS_API_KEY_CACHE
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is not None:
-        key = str(getattr(secrets_obj, "varipass_api_key", "")).strip()
-        if key != "":
-            _VARIPASS_API_KEY_CACHE = key
-            return _VARIPASS_API_KEY_CACHE
     env_key = str(os.environ.get("F35_VARIPASS_API_KEY", "")).strip()
     if env_key != "":
         _VARIPASS_API_KEY_CACHE = env_key
         return _VARIPASS_API_KEY_CACHE
-    try:
-        exe_hint: Optional[Path] = Path(sys.executable).resolve() if is_frozen() else None
-    except Exception:
-        exe_hint = None
-    try:
-        search_paths = default_dist_secret_paths(
-            base_dir=Path(__file__).resolve().parent,
-            exe_path=exe_hint,
-        )
-    except Exception:
-        search_paths = []
-    for raw in search_paths:
-        try:
-            path = Path(raw).resolve()
-        except Exception:
-            path = Path(raw)
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        candidate = str(payload.get("varipass_api_key", "")).strip()
-        if candidate != "":
-            print(f"[VARIPASS] Loaded API key from: {path}")
-            _VARIPASS_API_KEY_CACHE = candidate
-            return _VARIPASS_API_KEY_CACHE
     _VARIPASS_API_KEY_CACHE = ""
     return _VARIPASS_API_KEY_CACHE
 
@@ -3085,14 +2945,6 @@ def _ensure_supabase_config_cache() -> None:
     supa_key = ""
     supa_table = "pcd_link16_nets"
 
-    secrets_obj = _dist_get_secrets()
-    if secrets_obj is not None:
-        supa_url = str(getattr(secrets_obj, "supabase_url", "")).strip().rstrip("/")
-        supa_key = str(getattr(secrets_obj, "supabase_api_key", "")).strip()
-        table_val = str(getattr(secrets_obj, "supabase_table", "")).strip()
-        if table_val != "":
-            supa_table = table_val
-
     if supa_url == "":
         supa_url = str(os.environ.get("F35_SUPABASE_URL", "")).strip().rstrip("/")
     if supa_key == "":
@@ -3100,49 +2952,6 @@ def _ensure_supabase_config_cache() -> None:
     env_table = str(os.environ.get("F35_SUPABASE_TABLE", "")).strip()
     if env_table != "":
         supa_table = env_table
-
-    if supa_url == "" or supa_key == "":
-        try:
-            exe_hint: Optional[Path] = Path(sys.executable).resolve() if is_frozen() else None
-        except Exception:
-            exe_hint = None
-        try:
-            search_paths = default_dist_secret_paths(
-                base_dir=Path(__file__).resolve().parent,
-                exe_path=exe_hint,
-            )
-        except Exception:
-            search_paths = []
-        for raw in search_paths:
-            try:
-                path = Path(raw).resolve()
-            except Exception:
-                path = Path(raw)
-            if not path.exists() or not path.is_file():
-                continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            p_url = str(payload.get("supabase_url", "")).strip().rstrip("/")
-            p_key = str(
-                payload.get(
-                    "supabase_api_key",
-                    payload.get("supabase_key", payload.get("supabase_publishable_key", payload.get("supabase_anon_key", ""))),
-                )
-            ).strip()
-            p_table = str(payload.get("supabase_table", "")).strip()
-            if p_url != "" and p_key != "":
-                if supa_url == "":
-                    supa_url = p_url
-                if supa_key == "":
-                    supa_key = p_key
-                if p_table != "":
-                    supa_table = p_table
-                print(f"[SUPABASE] Loaded config from: {path}")
-                break
 
     _SUPABASE_URL_CACHE = supa_url
     _SUPABASE_API_KEY_CACHE = supa_key
@@ -6841,7 +6650,7 @@ def draw_portal4_menu_popup(
                 ("A2", "cms_up", "CMS\nUP"),
                 ("B2", "cms_down", "CMS\nDOWN"),
                 ("C2", "cms_left", "CMS\nLEFT"),
-                ("D2", "cms_right", "CMS\nRIGHT"),
+                ("D2", "cms_right", "CMS\nZ"),
             ],
             "throttle": [
                 ("A2", "cage_uncage", "CAGE\nUNCAGE"),
@@ -7081,7 +6890,7 @@ def draw_portal4_menu_popup(
                 ("A2", "cms_up", "CMS UP\n(H)/(B)"),
                 ("B2", "cms_down", "CMS DOWN\n(H)/(B)"),
                 ("C2", "cms_left", "CMS LEFT\n(H)/(B)"),
-                ("D2", "cms_right", "CMS RIGHT\n(H)/(B)"),
+                ("D2", "cms_right", "CMS Z\n(H)/(B)"),
             ],
             "throttle": [
                 ("A2", "cage_uncage", "CAGE\nUNCAGE (H)/(B)"),
@@ -8715,158 +8524,8 @@ def draw_portal4_menu_popup(
                 box_selected=(selected and not flashing),
             )
 
-    def _dist_user_options_cache() -> List[str]:
-        raw = dist_state.get("user_options", [])
-        opts: List[str] = []
-        if isinstance(raw, list):
-            for item in raw:
-                name = _dist_normalize_user_filename(item)
-                if name != "" and name not in opts:
-                    opts.append(name)
-        dist_state["user_options"] = list(opts)
-        selected = _dist_normalize_user_filename(dist_state.get("selected_user_file", ""))
-        if len(opts) > 0 and selected not in opts:
-            selected = opts[0]
-        if len(opts) <= 0:
-            selected = ""
-        dist_state["selected_user_file"] = selected
-        return opts
-
-    def draw_dist_config_cells() -> None:
-        access_ok = bool(dist_state.get("menu_access", False))
-        opts = _dist_user_options_cache()
-        display_opts = [Path(str(item)).stem for item in opts]
-        selected_user = str(dist_state.get("selected_user_file", "")).strip()
-        if len(opts) > 0 and selected_user not in opts:
-            selected_user = opts[0]
-            dist_state["selected_user_file"] = selected_user
-        try:
-            selected_idx = opts.index(selected_user)
-        except Exception:
-            selected_idx = 0
-
-        a1 = cell_rect_by_name("A1")
-        zones["DIST_CFG_A1_USER"] = a1
-        draw_popup_button(
-            a1,
-            ButtonState(
-                button_id="DIST_CFG_A1_USER",
-                button_type=ButtonType.GOL,
-                options=display_opts if len(display_opts) > 0 else ["NONE"],
-                selected_index=max(0, selected_idx),
-                function_label="USER",
-                enabled=access_ok,
-                flash_until_ms=item_flash_until.get("DIST_CFG_A1_USER", 0),
-            ),
-        )
-
-        locked = bool(dist_state.get("distributor_locked", False))
-        if locked:
-            dist_state["distributor_selected"] = False
-        dist_box = merge_cells("C1", "C2")
-        zones["DIST_CFG_DISTRIBUTOR"] = dist_box
-        selected = False
-        current_value = (
-            str(dist_state.get("distributor_input", "")).strip()
-            if selected
-            else str(dist_state.get("distributor_value", "")).strip()
-        )
-        display_top = _pmd_wrap_text(current_value if current_value != "" else ("LOCKED" if locked else "----"), 12, 1)[0]
-        display_bottom = _pmd_wrap_text(current_value if current_value != "" else "NONE", 12, 1)[0]
-        top_color = (255, 255, 255) if selected else ((128, 128, 128) if locked else LINE_COLOR)
-        draw_line(dist_box, 1, display_top, top_color, False, box_selected=selected)
-        draw_line(dist_box, 2, "DISTRIBUTOR", (128, 128, 128) if locked else LINE_COLOR, False)
-        draw_line(dist_box, 3, display_bottom, (255, 255, 255) if locked else LINE_COLOR, False)
-
-        info = merge_cells("A3", "E4")
-        zones["DIST_CFG_INFO"] = info
-        req_text = "ON" if bool(dist_state.get("require_user_key", True)) else "OFF"
-        draw_line(info, 1, f"REQ: {req_text}", LINE_COLOR, False)
-        user_line = selected_user if selected_user != "" else "NONE"
-        draw_line(info, 2, f"USER: {user_line}", LINE_COLOR, False)
-        draw_line(info, 3, "READ ONLY", LINE_COLOR, False)
-        status_text = str(dist_state.get("status", "")).strip()
-        if status_text != "":
-            draw_line(info, 4, _pmd_wrap_text(status_text, 30, 1)[0], (255, 255, 255), False)
-
-    def draw_dist_user_gol_cells() -> None:
-        opts = _dist_user_options_cache()
-        slots = [
-            "A1", "B1", "C1", "D1", "E1",
-            "A2", "B2", "C2", "D2", "E2",
-            "A3", "B3", "C3", "D3", "E3",
-            "A4", "B4", "C4", "D4", "E4",
-            "A5", "B5", "C5", "D5", "E5",
-            "A6", "B6", "C6", "D6", "E6",
-            "A7", "B7", "C7", "D7", "E7",
-        ]
-        page_size = len(slots)
-        total_pages = max(1, (len(opts) + page_size - 1) // page_size)
-        try:
-            page = int(dist_state.get("user_page", 0))
-        except Exception:
-            page = 0
-        page = max(0, min(total_pages - 1, page))
-        dist_state["user_page"] = page
-        selected_user = str(dist_state.get("selected_user_file", "")).strip()
-        start = page * page_size
-        chunk = opts[start : start + page_size]
-        for idx, option in enumerate(chunk):
-            box = cell_rect_by_name(slots[idx])
-            key = f"DIST_USER_OPT_{start + idx}"
-            zones[key] = box
-            flashing = item_flash_until.get(key, 0) > now_ms
-            selected = str(option).strip() == selected_user
-            label = Path(str(option)).stem
-            wrapped = _pmd_wrap_text(label, 8, 2)
-            if len(wrapped) == 1:
-                draw_line(
-                    box,
-                    2,
-                    wrapped[0],
-                    (255, 255, 255) if selected else LINE_COLOR,
-                    flashing,
-                    box_selected=(selected and not flashing),
-                )
-            else:
-                r1 = draw_line(box, 2, wrapped[0], (255, 255, 255) if selected else LINE_COLOR, flashing)
-                r2 = draw_line(box, 3, wrapped[1], (255, 255, 255) if selected else LINE_COLOR, flashing)
-                if selected and not flashing:
-                    pygame.draw.rect(screen, (255, 255, 255), r1.union(r2).inflate(4, 2), 1)
-        if total_pages > 1:
-            prev_box = cell_rect_by_name("D8")
-            zones["DIST_USER_PREV"] = prev_box
-            draw_popup_button(
-                prev_box,
-                ButtonState(
-                    button_id="DIST_USER_PREV",
-                    button_type=ButtonType.PAGE_ACCESS,
-                    text="<PREV",
-                    flash_until_ms=item_flash_until.get("DIST_USER_PREV", 0),
-                ),
-            )
-            next_box = cell_rect_by_name("E8")
-            zones["DIST_USER_NEXT"] = next_box
-            draw_popup_button(
-                next_box,
-                ButtonState(
-                    button_id="DIST_USER_NEXT",
-                    button_type=ButtonType.PAGE_ACCESS,
-                    text="NEXT>",
-                    flash_until_ms=item_flash_until.get("DIST_USER_NEXT", 0),
-                ),
-            )
-        status = merge_cells("A8", "B8")
-        zones["DIST_USER_STATUS"] = status
-        draw_line(status, 2, f"{page + 1}/{total_pages}", LINE_COLOR, False)
-
     if active_submenu is None:
         for key, (row, col, text) in STATUS_MENU_ITEMS.items():
-            if key == "DIST_CONFIG":
-                if not bool(dist_state.get("enabled", False)):
-                    continue
-                if not bool(dist_state.get("menu_access", False)):
-                    continue
             box = cell_rect(row, col)
             zones[key] = box
             button_type = ButtonType.PAGE_ACCESS if ">" in text else ButtonType.MOMENTARY_SINGLE
@@ -9061,32 +8720,6 @@ def draw_portal4_menu_popup(
                 button_id="BACK",
                 button_type=ButtonType.PAGE_ACCESS,
                 text="<DEBUG",
-                flash_until_ms=item_flash_until.get("BACK", 0),
-            ),
-        )
-    elif active_submenu == "DIST_CONFIG":
-        draw_dist_config_cells()
-        back_box = cell_rect(rows - 1, cols - 1)
-        zones["BACK"] = back_box
-        draw_popup_button(
-            back_box,
-            ButtonState(
-                button_id="BACK",
-                button_type=ButtonType.PAGE_ACCESS,
-                text="<MENU",
-                flash_until_ms=item_flash_until.get("BACK", 0),
-            ),
-        )
-    elif active_submenu == "DIST_USER_GOL":
-        draw_dist_user_gol_cells()
-        back_box = cell_rect(rows - 1, cols - 1)
-        zones["BACK"] = back_box
-        draw_popup_button(
-            back_box,
-            ButtonState(
-                button_id="BACK",
-                button_type=ButtonType.PAGE_ACCESS,
-                text="<DIST",
                 flash_until_ms=item_flash_until.get("BACK", 0),
             ),
         )
@@ -10582,7 +10215,6 @@ def _migrate_legacy_runtime_writable_data() -> None:
 
 
 def main() -> None:
-    global _DIST_SECRETS, _DIST_SECRETS_ERROR
     install_console_capture()
     install_crash_log_hook()
     try:
@@ -10594,43 +10226,6 @@ def main() -> None:
         _migrate_legacy_runtime_writable_data()
     except Exception as exc:
         print(f"[PATHS] writable migration skipped: {exc}")
-    try:
-        exe_hint: Optional[Path] = Path(sys.executable).resolve() if is_frozen() else None
-    except Exception:
-        exe_hint = None
-    secrets_paths = default_dist_secret_paths(
-        base_dir=Path(__file__).resolve().parent,
-        exe_path=exe_hint,
-    )
-    _DIST_SECRETS, _DIST_SECRETS_ERROR = load_dist_secrets(secrets_paths)
-    try:
-        dist_set_secrets(_DIST_SECRETS, _DIST_SECRETS_ERROR)
-    except Exception:
-        pass
-    dist_runtime_metadata = _dist_default_metadata()
-    dist_runtime_exe_path: Optional[Path] = None
-    if is_frozen():
-        try:
-            dist_runtime_exe_path = Path(sys.executable).resolve()
-        except Exception:
-            dist_runtime_exe_path = Path(sys.executable)
-        dist_runtime_metadata = _dist_load_effective_metadata(dist_runtime_exe_path)
-        if _DIST_SECRETS is not None:
-            dist_runtime_metadata = _dist_seed_embedded_users_from_packaged(
-                dist_runtime_exe_path,
-                dist_runtime_metadata,
-            )
-        # Remove legacy /USERS only after keys are persisted in EXE metadata
-        # (or when explicitly removed by DIST config). This avoids losing
-        # bootstrap keys when self-rewrite is blocked.
-        if bool(dist_runtime_metadata.get("users_removed", False)) or _dist_has_embedded_users(dist_runtime_exe_path):
-            _dist_try_remove_users_folder()
-        bypass_ok = _dist_consume_restart_auth_bypass(dist_runtime_exe_path)
-        if not bypass_ok:
-            auth_ok, auth_msg, _local_key = _dist_authorize_launch(dist_runtime_metadata)
-            if not auth_ok:
-                _dist_notify_auth_failure(dist_runtime_metadata.get("distributor", ""), auth_msg)
-                return
     pygame.init()
     settings = load_settings()
     raw_window_state = settings.get(WINDOW_STATE_SETTINGS_KEY, {})
@@ -10689,7 +10284,7 @@ def main() -> None:
 
     _set_windows_app_user_model_id()
     _apply_window_icon()
-    pygame.display.set_caption(_window_title_text(dist_runtime_metadata))
+    pygame.display.set_caption(_window_title_text())
     _fullscreen_mode = False
     _window_flags = pygame.RESIZABLE
 
@@ -11312,7 +10907,6 @@ def main() -> None:
         finalize_all_seclvl_fields()
         finalize_hmd_data_entry()
         finalize_all_hmd_video_data_entries()
-        _dist_finalize_distributor_entry()
         pmd_selected = _pmd_dr_selected_field()
         if pmd_selected is not None:
             finalize_pmd_dr_data_entry(pmd_selected)
@@ -12046,18 +11640,18 @@ def main() -> None:
         "bos_live_qty": 330.0,
     }
     dist_state: Dict[str, object] = {
-        "enabled": bool(is_frozen()),
+        "enabled": False,
         "menu_access": False,
-        "require_user_key": bool(dist_runtime_metadata.get("require_user_key", True)),
-        "selected_user_file": _dist_normalize_user_filename(dist_runtime_metadata.get("target_user_file", "")),
+        "require_user_key": False,
+        "selected_user_file": "",
         "user_options": [],
         "user_file_map": {},
         "user_public_keys": {},
         "user_page": 0,
-        "distributor_value": _dist_sanitize_distributor(dist_runtime_metadata.get("distributor", "")),
+        "distributor_value": "",
         "distributor_input": "",
         "distributor_selected": False,
-        "distributor_locked": bool(dist_runtime_metadata.get("lock_distributor", False)),
+        "distributor_locked": False,
         "status": "",
     }
     # Randomized startup values in nominal ("good") ranges.
@@ -12181,280 +11775,10 @@ def main() -> None:
             out.append(dict(item))
         return out
 
-    def _dist_refresh_user_cache() -> None:
-        if not is_frozen():
-            dist_state["user_file_map"] = {}
-            dist_state["user_public_keys"] = {}
-            dist_state["user_options"] = []
-            dist_state["selected_user_file"] = ""
-            return
-        user_map = _dist_collect_user_files()
-        key_map = _dist_collect_user_public_keys(dist_runtime_metadata)
-        dist_state["user_file_map"] = dict(user_map)
-        dist_state["user_public_keys"] = dict(key_map)
-        options = sorted(key_map.keys(), key=lambda item: str(item).lower())
-        dist_state["user_options"] = list(options)
-        selected = _dist_normalize_user_filename(dist_state.get("selected_user_file", ""))
-        if len(options) > 0 and selected not in options:
-            selected = options[0]
-        if len(options) <= 0:
-            selected = ""
-        dist_state["selected_user_file"] = selected
-
-    def _dist_menu_access_allowed() -> bool:
-        return bool(is_frozen()) and _seclvl_has_dist_credentials(seclvl_state)
-
-    def _dist_finalize_distributor_entry() -> None:
-        if bool(dist_state.get("distributor_locked", False)):
-            dist_state["distributor_selected"] = False
-            dist_state["distributor_input"] = str(dist_state.get("distributor_value", ""))
-            return
-        if not bool(dist_state.get("distributor_selected", False)) and str(dist_state.get("distributor_input", "")) == "":
-            return
-        committed = _dist_sanitize_distributor(dist_state.get("distributor_input", dist_state.get("distributor_value", "")))
-        dist_state["distributor_value"] = committed
-        dist_state["distributor_input"] = committed
-        dist_state["distributor_selected"] = False
-
-    def _dist_select_distributor_entry() -> None:
-        if bool(dist_state.get("distributor_locked", False)):
-            dist_state["distributor_selected"] = False
-            return
-        if bool(dist_state.get("distributor_selected", False)):
-            _dist_finalize_distributor_entry()
-            return
-        dist_state["distributor_selected"] = True
-        dist_state["distributor_input"] = str(dist_state.get("distributor_value", ""))
-
-    def _dist_distributor_backspace() -> None:
-        if not bool(dist_state.get("distributor_selected", False)):
-            return
-        if bool(dist_state.get("distributor_locked", False)):
-            return
-        current = str(dist_state.get("distributor_input", ""))
-        dist_state["distributor_input"] = current[:-1]
-
-    def _dist_distributor_type_char(ch: str) -> bool:
-        if not bool(dist_state.get("distributor_selected", False)):
-            return False
-        if bool(dist_state.get("distributor_locked", False)):
-            return False
-        txt = str(ch)
-        if txt == "":
-            return False
-        code = ord(txt[0])
-        if code < 32 or code > 126:
-            return False
-        current = str(dist_state.get("distributor_input", ""))
-        dist_state["distributor_input"] = _dist_sanitize_distributor(current + txt[0])
-        return True
-
-    def _dist_write_current_exe_metadata(metadata: Dict[str, object]) -> bool:
-        nonlocal dist_runtime_metadata
-        if not is_frozen() or dist_runtime_exe_path is None:
-            return False
-        normalized = _dist_normalize_metadata(metadata)
-        write_ok = _dist_write_embedded_metadata(dist_runtime_exe_path, normalized)
-        if write_ok:
-            try:
-                _dist_sidecar_path(dist_runtime_exe_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-        if write_ok:
-            dist_runtime_metadata = dict(normalized)
-        return write_ok
-
-    def _dist_internal_users_dir() -> Path:
-        if is_frozen() and dist_runtime_exe_path is not None:
-            return dist_runtime_exe_path.parent / "USERS"
-        return USERS_ROOT_PATH
-
-    def _dist_choose_user_file() -> Optional[Path]:
-        try:
-            import tkinter as tk  # type: ignore
-            from tkinter import filedialog  # type: ignore
-        except Exception:
-            return None
-        root = None
-        chosen = ""
-        try:
-            root = tk.Tk()
-            root.withdraw()
-            try:
-                root.attributes("-topmost", True)
-            except Exception:
-                pass
-            chosen = str(
-                filedialog.askopenfilename(
-                    title="Import USER File",
-                    filetypes=[("User Files", "*.user"), ("All Files", "*.*")],
-                )
-            ).strip()
-        except Exception:
-            chosen = ""
-        finally:
-            try:
-                if root is not None:
-                    root.destroy()
-            except Exception:
-                pass
-        if chosen == "":
-            return None
-        try:
-            return Path(chosen).resolve()
-        except Exception:
-            return None
-
-    def _dist_import_user_file() -> None:
-        if not is_frozen():
-            dist_state["status"] = "DIST CONFIG is EXE-only."
-            return
-        chosen = _dist_choose_user_file()
-        if chosen is None:
-            dist_state["status"] = "User import canceled."
-            return
-        imported_public_key = _dist_read_user_public_key(chosen)
-        if imported_public_key == "":
-            dist_state["status"] = "Invalid .user file (missing public key)."
-            return
-        stem = _sanitize_pmd_id(chosen.stem)
-        if stem == "":
-            stem = "imported_user"
-        out_name = f"{stem}.user"
-        updated_meta = _dist_normalize_metadata(dist_runtime_metadata)
-        embedded_raw = updated_meta.get("embedded_users", {})
-        embedded = dict(embedded_raw) if isinstance(embedded_raw, dict) else {}
-        candidate_name = out_name
-        if candidate_name in embedded and embedded.get(candidate_name) != imported_public_key:
-            base_stem = Path(out_name).stem
-            suffix = Path(out_name).suffix or ".user"
-            idx = 2
-            while True:
-                test_name = f"{base_stem}_{idx}{suffix}"
-                if test_name not in embedded:
-                    candidate_name = test_name
-                    break
-                idx += 1
-        embedded[candidate_name] = imported_public_key
-        updated_meta["embedded_users"] = embedded
-        updated_meta["users_removed"] = False
-        if _dist_write_current_exe_metadata(updated_meta):
-            _dist_refresh_user_cache()
-            dist_state["selected_user_file"] = candidate_name
-            dist_state["status"] = f"Imported user: {candidate_name}"
-        else:
-            dist_state["status"] = "Failed to import user into EXE metadata."
-
-    def _dist_save_copy_from_selection() -> None:
-        if not is_frozen() or dist_runtime_exe_path is None:
-            dist_state["status"] = "DIST CONFIG is EXE-only."
-            return
-        _dist_finalize_distributor_entry()
-        _dist_refresh_user_cache()
-        keys_raw = dist_state.get("user_public_keys", {})
-        user_keys = keys_raw if isinstance(keys_raw, dict) else {}
-        selected_name = _dist_normalize_user_filename(dist_state.get("selected_user_file", ""))
-        selected_public_key = _dist_normalize_public_key(user_keys.get(selected_name, ""))
-        if selected_public_key == "":
-            dist_state["status"] = "Select a valid .user file first."
-            return
-        distributor = _dist_sanitize_distributor(dist_state.get("distributor_value", ""))
-        output_name = f"{Path(selected_name).stem} - Simulator{dist_runtime_exe_path.suffix}"
-        output_path = dist_runtime_exe_path.parent / output_name
-        try:
-            shutil.copy2(dist_runtime_exe_path, output_path)
-        except Exception as exc:
-            dist_state["status"] = f"Copy failed: {exc}"
-            return
-        out_meta = _dist_normalize_metadata(dist_runtime_metadata)
-        out_meta["require_user_key"] = True
-        out_meta["allowed_public_keys"] = [selected_public_key]
-        out_meta["target_user_file"] = selected_name
-        out_meta["distributor"] = distributor
-        out_meta["lock_distributor"] = True
-        out_meta["users_removed"] = False
-        embedded_raw = out_meta.get("embedded_users", {})
-        embedded = dict(embedded_raw) if isinstance(embedded_raw, dict) else {}
-        embedded[selected_name] = selected_public_key
-        out_meta["embedded_users"] = embedded
-        saved = _dist_write_embedded_metadata(output_path, out_meta)
-        if saved:
-            try:
-                _dist_sidecar_path(output_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-        if saved:
-            dist_state["status"] = f"Saved copy: {output_path.name}"
-        else:
-            dist_state["status"] = "Unable to write copy metadata."
-
-    def _dist_delete_selected_user() -> None:
-        if not is_frozen():
-            dist_state["status"] = "DIST CONFIG is EXE-only."
-            return
-        _dist_refresh_user_cache()
-        selected_name = _dist_normalize_user_filename(dist_state.get("selected_user_file", ""))
-        if selected_name == "":
-            dist_state["status"] = "No selected user file to delete."
-            return
-        keys_raw = dist_state.get("user_public_keys", {})
-        key_map = keys_raw if isinstance(keys_raw, dict) else {}
-        selected_public_key = _dist_normalize_public_key(key_map.get(selected_name, ""))
-        updated_meta = _dist_normalize_metadata(dist_runtime_metadata)
-        embedded_raw = updated_meta.get("embedded_users", {})
-        embedded = dict(embedded_raw) if isinstance(embedded_raw, dict) else {}
-        removed_any = False
-        if selected_name in embedded:
-            embedded.pop(selected_name, None)
-            removed_any = True
-        updated_meta["embedded_users"] = embedded
-        if selected_public_key != "":
-            allowed_raw = updated_meta.get("allowed_public_keys", [])
-            allowed: List[str] = []
-            if isinstance(allowed_raw, list):
-                for item in allowed_raw:
-                    key = _dist_normalize_public_key(item)
-                    if key == "" or key == selected_public_key:
-                        continue
-                    if key not in allowed:
-                        allowed.append(key)
-            updated_meta["allowed_public_keys"] = allowed
-        target_user = _dist_normalize_user_filename(updated_meta.get("target_user_file", ""))
-        if target_user.strip().lower() == selected_name.strip().lower():
-            updated_meta["target_user_file"] = ""
-        if not removed_any and selected_public_key == "":
-            dist_state["status"] = f"User not found in EXE metadata: {selected_name}"
-            return
-        if _dist_write_current_exe_metadata(updated_meta):
-            _dist_refresh_user_cache()
-            dist_state["status"] = f"Deleted user: {selected_name}"
-        else:
-            dist_state["status"] = "Failed to delete user from EXE metadata."
-
-    def _dist_remove_requirement_for_current_exe() -> None:
-        if not is_frozen() or dist_runtime_exe_path is None:
-            dist_state["status"] = "DIST CONFIG is EXE-only."
-            return
-        _dist_finalize_distributor_entry()
-        updated_meta = _dist_normalize_metadata(dist_runtime_metadata)
-        updated_meta["require_user_key"] = False
-        updated_meta["allowed_public_keys"] = []
-        updated_meta["target_user_file"] = ""
-        updated_meta["users_removed"] = True
-        updated_meta["lock_distributor"] = True
-        updated_meta["distributor"] = _dist_sanitize_distributor(dist_state.get("distributor_value", ""))
-        updated_meta["embedded_users"] = {}
-        if _dist_write_current_exe_metadata(updated_meta):
-            dist_state["require_user_key"] = False
-            dist_state["distributor_locked"] = True
-            dist_state["distributor_selected"] = False
-            dist_state["status"] = "User requirement removed for this EXE."
-            _dist_try_remove_users_folder()
-            _dist_refresh_user_cache()
-        else:
-            dist_state["status"] = "Unable to update current EXE."
-
-    _dist_refresh_user_cache()
+    dist_state["user_file_map"] = {}
+    dist_state["user_public_keys"] = {}
+    dist_state["user_options"] = []
+    dist_state["selected_user_file"] = ""
 
     def _pmd_main_state_snapshot() -> Dict[str, object]:
         return {
@@ -12920,7 +12244,6 @@ def main() -> None:
             "sys",
             "__main__",
             "main",
-            "dist_secret_material",
         }
 
         def _restricted_import(name: str, g=None, l=None, fromlist=(), level=0):
@@ -14334,11 +13657,6 @@ def main() -> None:
             launch_env = os.environ.copy()
             if is_frozen():
                 argv = [exe_path]
-                if (
-                    dist_runtime_exe_path is not None
-                    and bool(dist_runtime_metadata.get("require_user_key", True))
-                ):
-                    launch_env = _dist_apply_restart_auth_bypass_env(launch_env, dist_runtime_exe_path)
             else:
                 # Always relaunch main.py directly from its absolute path.
                 # This avoids Windows path splitting issues in directories with spaces.
@@ -20780,11 +20098,11 @@ def main() -> None:
             ],
             "ICP-A": _icp_rows(
                 icp_a_status,
-                ["DSA1A", "DSA1B", "GPA1A1", "GPA1A2", "GPA1B1", "GPA1B2", "GPA2A1", "GPA2A2", "GPA2B1", "GPA 2B2", "GPIOA1", "GPIOA2"],
+                ["DSA1A", "DSA1B", "GPA1A1", "GPA1A2", "GPA1B1", "GPA1B2", "GPA2A1", "GPA2A2", "GPA2B1", "GPA2B2", "GPIOA1", "GPIOA2"],
             ),
             "ICP-B": _icp_rows(
                 icp_b_status,
-                ["DSB1A", "DSB1B", "GPA1A1", "GPA1A2", "GPA1B1", "GPA1B2", "GPIOB1", "GPIOB2"],
+                ["DSB1A", "DSB1B", "GPB1A1", "GPB1A2", "GPB1B1", "GPB1B2", "GPIOB1", "GPIOB2"],
             ),
         }
         msstat_blocks: Dict[str, List[Tuple[str, str]]] = {}
@@ -20800,6 +20118,12 @@ def main() -> None:
         phm_state["msstat_blocks"] = {k: list(v) for k, v in msstat_blocks.items()}
         phm_state["on_off_button_status"] = dict(button_status)
         phm_state["cni_page_phase"] = str(cni_page_phase).upper().strip() or "STD"
+        asr_state = getattr(formats, "ASR1_STATE", {})
+        if isinstance(asr_state, dict):
+            radar_display_status = str(runtime_subsystem_status.get("RADAR", radar_status)).upper().strip() or "OFF"
+            asr_state["radar_status"] = radar_display_status
+            asr_state["radar_fail"] = radar_display_status in {"FAIL", "FN", "DEGD", "OT", "INOP"}
+            setattr(formats, "ASR1_STATE", asr_state)
 
     def _phm_debug_recompute_system_override(system_name: str) -> None:
         s = _ensure_phm_status_debug_state()
@@ -22950,6 +22274,47 @@ def main() -> None:
             pmd_dr_state[state_key] = bool(down)
             return bool(down and not prev_down)
 
+        def _press_kind_on_release(action: str, threshold_ms: int = 500) -> str:
+            action_key = str(action).strip().lower()
+            key_base = re.sub(r"[^a-z0-9_]+", "_", action_key)
+            prev_key = f"hotas_press_prev_{key_base}"
+            start_key = f"hotas_press_start_ms_{key_base}"
+            down = bool(now_map.get(action_key, False))
+            prev_down = bool(pmd_dr_state.get(prev_key, False))
+            if down and not prev_down:
+                pmd_dr_state[start_key] = int(now_ms)
+            if (not down) and prev_down:
+                try:
+                    start_ms = int(pmd_dr_state.get(start_key, now_ms))
+                except Exception:
+                    start_ms = int(now_ms)
+                held_ms = max(0, int(now_ms) - int(start_ms))
+                pmd_dr_state[prev_key] = False
+                pmd_dr_state[start_key] = 0
+                return "long" if held_ms >= int(threshold_ms) else "short"
+            pmd_dr_state[prev_key] = bool(down)
+            return ""
+
+        def _held_after(action: str, threshold_ms: int) -> bool:
+            action_key = str(action).strip().lower()
+            key_base = re.sub(r"[^a-z0-9_]+", "_", action_key)
+            prev_key = f"hotas_hold_prev_{key_base}"
+            start_key = f"hotas_hold_start_ms_{key_base}"
+            down = bool(now_map.get(action_key, False))
+            prev_down = bool(pmd_dr_state.get(prev_key, False))
+            if down and not prev_down:
+                pmd_dr_state[start_key] = int(now_ms)
+            if not down:
+                pmd_dr_state[prev_key] = False
+                pmd_dr_state[start_key] = 0
+                return False
+            pmd_dr_state[prev_key] = True
+            try:
+                start_ms = int(pmd_dr_state.get(start_key, now_ms))
+            except Exception:
+                start_ms = int(now_ms)
+            return bool(int(now_ms) - int(start_ms) >= int(threshold_ms))
+
         def _command_landing_gear(source: str) -> None:
             _command_landing_gear_input(source)
 
@@ -23263,6 +22628,330 @@ def main() -> None:
                 system_mode = next_mode
                 print(f"[HOTAS][WMS] {source} -> {next_mode}")
 
+        def _poi_format_name() -> str:
+            target = _poi_format_obj()
+            if target is None:
+                return ""
+            try:
+                return str(getattr(target[2], "name", "")).upper().strip()
+            except Exception:
+                return ""
+
+        def _set_toi_from_current_context() -> bool:
+            toi_state_raw = getattr(formats, "TSD_TOI_STATE", None)
+            toi_state = toi_state_raw if isinstance(toi_state_raw, dict) else {}
+            tracked = _toi_lat_lon_from_tracked_target()
+            marker_pos: Optional[Tuple[int, int]] = None
+            if tracked is not None:
+                tsd_key, lat, lon, marker_pos = tracked
+            else:
+                cursor_pos = _read_slew_cursor_pos()
+                toi = _toi_lat_lon_from_cursor(cursor_pos)
+                if toi is None:
+                    return False
+                tsd_key, lat, lon = toi
+                marker_pos = (int(cursor_pos[0]), int(cursor_pos[1]))
+            toi_state["active"] = True
+            toi_state["tsd_name"] = str(tsd_key)
+            toi_state["lat"] = float(lat)
+            toi_state["lon"] = float(lon)
+            toi_state["screen_pos"] = marker_pos
+            toi_state["set_at_ms"] = int(now_ms)
+            setattr(formats, "TSD_TOI_STATE", toi_state)
+            return True
+
+        def _clear_toi_state() -> None:
+            toi_state_raw = getattr(formats, "TSD_TOI_STATE", None)
+            toi_state = toi_state_raw if isinstance(toi_state_raw, dict) else {}
+            toi_state["active"] = False
+            toi_state["lat"] = None
+            toi_state["lon"] = None
+            toi_state["tsd_name"] = ""
+            toi_state["screen_pos"] = None
+            setattr(formats, "TSD_TOI_STATE", toi_state)
+
+        def _sensor_state_dict(attr_name: str) -> Dict[str, object]:
+            raw = getattr(formats, attr_name, {})
+            state_dict = raw if isinstance(raw, dict) else {}
+            if not isinstance(raw, dict):
+                setattr(formats, attr_name, state_dict)
+            return state_dict
+
+        def _mark_sensor_nts(kind: str = "") -> None:
+            fmt_name = _poi_format_name()
+            if _normalize_tsd_name(fmt_name) is not None:
+                if _set_toi_from_current_context():
+                    tsd = _poi_tsd_state()
+                    if isinstance(tsd, dict):
+                        tsd["hotas_nts_kind"] = str(kind).upper().strip()
+                        tsd["hotas_nts_last_ms"] = int(now_ms)
+                    print(f"[HOTAS][TMS] TSD designate {str(kind).upper().strip() or 'TGT'} NTS")
+                return
+            if fmt_name == "TFLIR":
+                st = _sensor_state_dict("TFLIR3D_STATE")
+                st["nts_designated"] = True
+                st["track_mode"] = "AREA TRK" if str(kind).upper().strip() != "AA" else "SINGLE TRK"
+                st["nts_kind"] = str(kind).upper().strip()
+                st["nts_set_ms"] = int(now_ms)
+                print("[HOTAS][TMS] TFLIR NTS")
+                return
+            if fmt_name == "DAS":
+                st = _sensor_state_dict("DAS3D_STATE")
+                st["nts_designated"] = True
+                st["track_mode"] = "A/S" if str(kind).upper().strip() == "AS" else "A/A"
+                st["view_mode"] = "VIEW A-S" if str(kind).upper().strip() == "AS" else "VIEW A-A"
+                st["nts_set_ms"] = int(now_ms)
+                print("[HOTAS][TMS] DAS NTS")
+                return
+            if fmt_name == "ASR1":
+                st = _sensor_state_dict("ASR1_STATE")
+                st["nts_designated"] = True
+                st["nts_kind"] = str(kind).upper().strip()
+                st["spnt_tgt"] = True
+                st["nts_set_ms"] = int(now_ms)
+                print("[HOTAS][TMS] ASR NTS")
+
+        def _clear_sensor_nts(all_modes: bool = False) -> None:
+            _clear_toi_state()
+            tsd = _poi_tsd_state()
+            if isinstance(tsd, dict):
+                tsd["hotas_nts_kind"] = ""
+                tsd["hotas_nts_last_ms"] = int(now_ms)
+            for attr_name in ("TFLIR3D_STATE", "DAS3D_STATE", "ASR1_STATE"):
+                st = _sensor_state_dict(attr_name)
+                st["nts_designated"] = False
+                st["nts_kind"] = ""
+                if attr_name == "TFLIR3D_STATE":
+                    st["track_mode"] = "AREA TRK"
+                    st["laser_spot_track"] = False if all_modes else bool(st.get("laser_spot_track", False))
+                elif attr_name == "DAS3D_STATE":
+                    st["track_mode"] = ""
+                elif attr_name == "ASR1_STATE":
+                    st["spnt_tgt"] = False
+            print("[HOTAS][TMS] clear NTS")
+
+        def _step_nts(kind: str) -> None:
+            target_kind = str(kind).upper().strip()
+            if target_kind not in {"AA", "AS"}:
+                target_kind = "AS"
+            tsd = _poi_tsd_state()
+            if isinstance(tsd, dict):
+                key = "hotas_as_nts_step" if target_kind == "AS" else "hotas_aa_nts_step"
+                try:
+                    tsd[key] = int(tsd.get(key, -1)) + 1
+                except Exception:
+                    tsd[key] = 0
+                tsd["hotas_nts_kind"] = target_kind
+                _set_toi_from_current_context()
+            fmt_name = _poi_format_name()
+            if fmt_name == "TFLIR":
+                st = _sensor_state_dict("TFLIR3D_STATE")
+                st["nts_designated"] = True
+                st["nts_kind"] = target_kind
+                st["track_mode"] = "AREA TRK" if target_kind == "AS" else "SINGLE TRK"
+            elif fmt_name == "ASR1":
+                st = _sensor_state_dict("ASR1_STATE")
+                st["nts_designated"] = True
+                st["nts_kind"] = target_kind
+                st["spnt_tgt"] = True
+            pmd_dr_state["hotas_last_nts_kind"] = target_kind
+            pmd_dr_state["hotas_last_nts_step_ms"] = int(now_ms)
+            print(f"[HOTAS][TMS] step {target_kind} NTS")
+
+        def _activate_laser_spot_track() -> None:
+            st = _sensor_state_dict("TFLIR3D_STATE")
+            st["laser_spot_track"] = True
+            st["track_mode"] = "LST"
+            st["nts_designated"] = True
+            st["nts_set_ms"] = int(now_ms)
+            print("[HOTAS][TMS] TFLIR LST")
+
+        def _set_tflir_slew_control() -> None:
+            fmt_name = _poi_format_name()
+            if fmt_name not in {"TFLIR", "ASR1"}:
+                return
+            tflir = _sensor_state_dict("TFLIR3D_STATE")
+            tflir["tflir_slew_control"] = True
+            tflir["look_slew_active"] = True
+            asr = _sensor_state_dict("ASR1_STATE")
+            asr["tflir_slew_control"] = True
+            pmd_dr_state["hotas_wpn_rel_tflir_slew_ms"] = int(now_ms)
+            print("[HOTAS][WPN REL MODE] TFLIR slew control")
+
+        def _loaded_store_stations(type_filter: Set[str]) -> List[str]:
+            _ensure_pmd_stores_state()
+            actual = _pmd_stores_inv_actual_store_loads()
+            out: List[str] = []
+            for sta in PMD_STORES_STATION_ORDER:
+                entry = actual.get(sta)
+                if not isinstance(entry, dict):
+                    continue
+                store_type = str(entry.get("type", "AS")).upper().strip()
+                if store_type in type_filter:
+                    out.append(sta)
+            return out
+
+        def _cycle_weapon_station(type_filter: Set[str], state_key: str, label: str) -> None:
+            stations = _loaded_store_stations(type_filter)
+            if len(stations) <= 0:
+                pmd_dr_state[state_key] = ""
+                print(f"[HOTAS][WMS] no {label} stations")
+                return
+            current = str(pmd_dr_state.get(state_key, "")).upper().strip()
+            try:
+                idx = stations.index(current)
+                idx = (idx + 1) % len(stations)
+            except Exception:
+                idx = 0
+            pmd_dr_state[state_key] = stations[idx]
+            print(f"[HOTAS][WMS] {label} station {stations[idx]}")
+
+        def _cycle_bomb_type() -> None:
+            _ensure_pmd_stores_state()
+            actual = _pmd_stores_inv_actual_store_loads()
+            types: List[str] = []
+            for sta in PMD_STORES_STATION_ORDER:
+                entry = actual.get(sta)
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("type", "")).upper().strip() != "AS":
+                    continue
+                weapon = str(entry.get("weapon", "")).strip()
+                if weapon != "" and weapon not in types:
+                    types.append(weapon)
+            if len(types) <= 0:
+                pmd_dr_state["hotas_selected_bomb_type"] = ""
+                print("[HOTAS][WMS] no AS bomb type")
+                return
+            current = str(pmd_dr_state.get("hotas_selected_bomb_type", "")).strip()
+            try:
+                idx = (types.index(current) + 1) % len(types)
+            except Exception:
+                idx = 0
+            pmd_dr_state["hotas_selected_bomb_type"] = types[idx]
+            print(f"[HOTAS][WMS] bomb type {types[idx]}")
+
+        def _release_store_for_mode() -> bool:
+            mode = str(system_mode).upper().strip()
+            if mode in {"AA1", "AA2"}:
+                filter_set = {"MRM", "SRM"}
+                state_key = "hotas_selected_missile_station"
+                label = "missile"
+            else:
+                filter_set = {"AS"}
+                state_key = "hotas_selected_as_station"
+                label = "A/S"
+            stations = _loaded_store_stations(filter_set)
+            if len(stations) <= 0:
+                pmd_dr_state["hotas_last_release_status"] = f"NO {label.upper()} STORE"
+                print(f"[HOTAS][PICKLE] no {label} store")
+                return False
+            selected = str(pmd_dr_state.get(state_key, "")).upper().strip()
+            if selected not in stations:
+                selected = stations[0]
+            qty_map_raw = pmd_dr_state.get("stores_sta_qty", {})
+            qty_map = qty_map_raw if isinstance(qty_map_raw, dict) else {}
+            try:
+                qty = max(1, int(qty_map.get(selected, 1)))
+            except Exception:
+                qty = 1
+            if qty > 1:
+                qty_map[selected] = qty - 1
+                pmd_dr_state["stores_sta_qty"] = dict(qty_map)
+            else:
+                _pmd_stores_inv_apply_clear([selected])
+            pmd_dr_state[state_key] = selected
+            pmd_dr_state["hotas_last_release_station"] = selected
+            pmd_dr_state["hotas_last_release_status"] = f"RELEASE {selected}"
+            pmd_dr_state["hotas_last_release_ms"] = int(now_ms)
+            _sync_stores_to_sms_state()
+            print(f"[HOTAS][PICKLE] release {selected}")
+            return True
+
+        def _dispense_cm_program(program: int) -> None:
+            sms_state = getattr(formats, "SMS_STATE", {})
+            if not isinstance(sms_state, dict):
+                return
+            prog = max(1, min(3, int(program)))
+            sms_state["excm_program"] = prog
+            sms_state["last_cm_program"] = prog
+            sms_state["last_cm_dispense_ms"] = int(now_ms)
+            armed = bool(int(sms_state.get("excm_armed", 0) or 0))
+            if not armed:
+                pmd_dr_state["hotas_cm_last_status"] = f"PROG {prog} INHIB"
+                print(f"[HOTAS][CFFL] PROG {prog} inhibited EXCM STBY")
+                return
+            chaff_use, flare_use = (1, 0) if prog == 1 else ((0, 1) if prog == 2 else (1, 1))
+            try:
+                chaff = max(0, min(30, int(pmd_dr_state.get("stores_chaff_value", sms_state.get("chaff", 10)))))
+            except Exception:
+                chaff = 10
+            try:
+                flare = max(0, min(30, int(pmd_dr_state.get("stores_flare_value", sms_state.get("flare", 10)))))
+            except Exception:
+                flare = 10
+            chaff = max(0, chaff - chaff_use)
+            flare = max(0, flare - flare_use)
+            pmd_dr_state["stores_chaff_value"] = int(chaff)
+            pmd_dr_state["stores_flare_value"] = int(flare)
+            sms_state["chaff"] = int(chaff)
+            sms_state["flare"] = int(flare)
+            pmd_dr_state["hotas_cm_last_status"] = f"PROG {prog}"
+            print(f"[HOTAS][CFFL] PROG {prog} chaff={chaff} flare={flare}")
+
+        def _cms_action(kind: str) -> None:
+            twd_state = getattr(formats, "TWD_STATE", {})
+            if not isinstance(twd_state, dict):
+                return
+            action = str(kind).upper().strip()
+            if action == "JAM":
+                twd_state["jam_active"] = True
+                twd_state["jam_last_ms"] = int(now_ms)
+            elif action == "REMOVE":
+                twd_state["jam_active"] = False
+                twd_state["jam_removed_last_ms"] = int(now_ms)
+            elif action == "CASE":
+                twd_state["case_jamming"] = not bool(twd_state.get("case_jamming", False))
+                twd_state["case_jamming_last_ms"] = int(now_ms)
+            elif action == "EGL":
+                asr_state = _sensor_state_dict("ASR1_STATE")
+                asr_state["egl_enabled"] = not bool(asr_state.get("egl_enabled", False))
+                asr_state["egl_last_ms"] = int(now_ms)
+            pmd_dr_state["hotas_cms_last_action"] = action
+            print(f"[HOTAS][CMS] {action}")
+
+        def _set_speedbrake_pct(target_pct: float, source: str) -> None:
+            pct = max(0.0, min(100.0, float(target_pct)))
+            pmd_dr_state["hotas_speedbrake_pct"] = float(pct)
+            aircraft["SPEED_BRAKE_PCT"] = float(pct)
+            print(f"[HOTAS][SPD BRK] {source} {pct:.0f}%")
+
+        def _cycle_nws_gain() -> None:
+            try:
+                altitude_ft = float(aircraft.get("ALTITUDE_FT", aircraft.get("ALTITUDE_TARGET_FT", 0.0)))
+            except Exception:
+                altitude_ft = 0.0
+            if altitude_ft > 50.0:
+                pmd_dr_state["hotas_nws_status"] = "AIRBORNE N/A"
+                print("[HOTAS][NWS] airborne N/A")
+                return
+            current = str(pmd_dr_state.get("hotas_nws_gain", "OFF")).upper().strip()
+            next_gain = "LO" if current not in {"LO", "HI"} else ("HI" if current == "LO" else "LO")
+            pmd_dr_state["hotas_nws_gain"] = next_gain
+            pmd_dr_state["hotas_nws_enabled"] = True
+            panel_state = _ensure_panel_button_states()
+            console_left = panel_state.get("CONSOLE LEFT", {})
+            if isinstance(console_left, dict):
+                console_left["NWS"] = next_gain
+            print(f"[HOTAS][NWS] {next_gain}")
+
+        def _toggle_apc() -> None:
+            ap_state = _autopilot_state()
+            new_on = not bool(ap_state.get("apc_enabled", False))
+            ap_state["apc_enabled"] = bool(new_on)
+            pmd_dr_state["hotas_apc_enabled"] = bool(new_on)
+            print(f"[HOTAS][APC] {'ON' if new_on else 'OFF'}")
+
         if int(mngmt_scroll_delta) != 0:
             _hotas_management_scroll(int(mngmt_scroll_delta))
 
@@ -23428,13 +23117,23 @@ def main() -> None:
             ap_state["speed_hold_target_kts"] = float(max(0.0, base + float(delta_kts)))
             print(f"[HOTAS][SPD HOLD] target={float(ap_state.get('speed_hold_target_kts') or 0.0):.0f}")
 
-        if _rising("wms_fwd"):
+        wms_fwd_kind = _press_kind_on_release("wms_fwd")
+        wms_right_kind = _press_kind_on_release("wms_right")
+        wms_left_kind = _press_kind_on_release("wms_left")
+        wms_aft_kind = _press_kind_on_release("wms_aft")
+        if wms_fwd_kind == "short":
+            if str(system_mode).upper().strip() == "AA1":
+                _cycle_weapon_station({"MRM", "SRM"}, "hotas_selected_missile_station", "missile")
             _set_system_mode_from_hotas("AA1", "FWD")
-        if _rising("wms_right"):
+        if wms_right_kind == "short":
+            if str(system_mode).upper().strip() == "AA2":
+                _cycle_weapon_station({"MRM", "SRM"}, "hotas_selected_missile_station", "missile")
             _set_system_mode_from_hotas("AA2", "RIGHT")
-        if _rising("wms_left"):
+        if wms_left_kind == "short":
             _set_system_mode_from_hotas("AS", "LEFT")
-        if _rising("wms_aft"):
+        elif wms_left_kind == "long":
+            _cycle_bomb_type()
+        if wms_aft_kind in {"short", "long"}:
             _set_system_mode_from_hotas("DGFT", "AFT")
         if _rising("wms_z"):
             _set_system_mode_from_hotas("NAV", "Z")
@@ -23443,72 +23142,32 @@ def main() -> None:
             marker = str(pmd_dr_state.get("hotas_nav_marker", "FPM")).upper().strip()
             marker = "CDM" if marker == "FPM" else "FPM"
             pmd_dr_state["hotas_nav_marker"] = marker
+            fmt_name = _poi_format_name()
+            if fmt_name == "TFLIR":
+                st = _sensor_state_dict("TFLIR3D_STATE")
+                st["sensor_caged"] = not bool(st.get("sensor_caged", False))
+            elif fmt_name == "ASR1":
+                st = _sensor_state_dict("ASR1_STATE")
+                st["sensor_caged"] = not bool(st.get("sensor_caged", False))
             print(f"[HOTAS][CAGE] nav_marker={marker}")
 
         if _single_press("pol_ctrl", "hotas_pol_ctrl_prev_down"):
-            _toggle_thermal_polarity_for_poi()
+            if _poi_tsd_state() is not None:
+                _step_nts("AA")
+            else:
+                _toggle_thermal_polarity_for_poi()
 
         if _single_press("spd_hold_z", "hotas_spd_hold_z_prev_down"):
             _toggle_speed_hold()
-        if _rising("spd_hold_up"):
-            _step_speed_hold(1.0)
-        if _rising("spd_hold_down"):
-            _step_speed_hold(-1.0)
+        spd_hold_up_kind = _press_kind_on_release("spd_hold_up")
+        spd_hold_down_kind = _press_kind_on_release("spd_hold_down")
+        if spd_hold_up_kind in {"short", "long"}:
+            _step_speed_hold(10.0 if spd_hold_up_kind == "long" else 1.0)
+        if spd_hold_down_kind in {"short", "long"}:
+            _step_speed_hold(-10.0 if spd_hold_down_kind == "long" else -1.0)
 
-        apc_binding = _hotas_get_connected_binding("aprch_pwr_comp")
-        apc_live_down = bool(_hotas_is_binding_down(apc_binding)) if isinstance(apc_binding, dict) else False
-        apc_override_raw = pmd_dr_state.get("hotas_event_down_override", {})
-        apc_override = apc_override_raw if isinstance(apc_override_raw, dict) else {}
-        apc_event_down = bool(apc_override.get("aprch_pwr_comp", False))
-        apc_raw_down = bool(hotas_now_map.get("aprch_pwr_comp", False))
-        apc_key_down = bool(key_now_map.get("aprch_pwr_comp", False))
-        apc_instant_down = bool(apc_key_down or apc_event_down or apc_raw_down or apc_live_down)
-        if apc_instant_down:
-            pmd_dr_state["apc_last_down_ms"] = int(now_ms)
-        try:
-            apc_last_down_ms = int(pmd_dr_state.get("apc_last_down_ms", 0))
-        except Exception:
-            apc_last_down_ms = 0
-        # Warthog buttons can emit brief release bounces. Treat releases under
-        # 300ms as still held so a real hold reaches the 500ms threshold.
-        apc_held = bool(apc_instant_down or (apc_last_down_ms > 0 and int(now_ms) - apc_last_down_ms <= 300))
-        apc_debug_state = (
-            bool(apc_key_down),
-            bool(apc_event_down),
-            bool(apc_raw_down),
-            bool(apc_live_down),
-            bool(apc_held),
-        )
-        if tuple(pmd_dr_state.get("apc_debug_state", (None, None, None, None, None))) != apc_debug_state:
-            pmd_dr_state["apc_debug_state"] = apc_debug_state
-            print(
-                "[HOTAS][APC] "
-                f"key={int(apc_key_down)} event={int(apc_event_down)} "
-                f"raw={int(apc_raw_down)} live={int(apc_live_down)} held={int(apc_held)}"
-            )
-        apc_prev_held = bool(pmd_dr_state.get("apc_prev_held", False))
-        if apc_held and not apc_prev_held:
-            pmd_dr_state["apc_hold_start_ms"] = int(now_ms)
-            pmd_dr_state["apc_hold_fired"] = False
-            print("[HOTAS][APC] hold_start")
-        if apc_held:
-            try:
-                apc_start_ms = int(pmd_dr_state.get("apc_hold_start_ms", now_ms))
-            except Exception:
-                apc_start_ms = int(now_ms)
-            if (not bool(pmd_dr_state.get("apc_hold_fired", False))) and int(now_ms) - int(apc_start_ms) >= 500:
-                _trigger_sms_l3_doors_from_hotas()
-                pmd_dr_state["apc_hold_fired"] = True
-        elif apc_prev_held:
-            try:
-                held_ms = int(now_ms) - int(pmd_dr_state.get("apc_hold_start_ms", now_ms))
-            except Exception:
-                held_ms = 0
-            if not bool(pmd_dr_state.get("apc_hold_fired", False)):
-                print(f"[HOTAS][APC] released_before_500ms held_ms={held_ms}")
-            pmd_dr_state["apc_hold_start_ms"] = 0
-            pmd_dr_state["apc_hold_fired"] = False
-        pmd_dr_state["apc_prev_held"] = bool(apc_held)
+        if _single_press("aprch_pwr_comp", "hotas_apc_prev_down"):
+            _toggle_apc()
 
         if _single_press("comm_ctl_z", "hotas_comm_ctl_z_prev_down"):
             try:
@@ -23534,6 +23193,74 @@ def main() -> None:
                 _set_fuel_refuel_osb_from_disconnect(False)
             else:
                 _set_fuel_refuel_osb_from_disconnect(True)
+
+        g_limit_override = _held_after("disconnect", 500)
+        pmd_dr_state["hotas_g_limit_override"] = bool(g_limit_override)
+        fcs_state = getattr(formats, "FCS_STATE", {})
+        if isinstance(fcs_state, dict):
+            fcs_state["g_limit_override"] = bool(g_limit_override)
+
+        if _single_press("nws", "hotas_nws_prev_down"):
+            _cycle_nws_gain()
+
+        if _single_press("wpn_sel", "hotas_wpn_sel_prev_down"):
+            _set_tflir_slew_control()
+
+        mpo_enabled = _held_after("mpo", 1000)
+        pmd_dr_state["hotas_mpo_enabled"] = bool(mpo_enabled)
+        if isinstance(fcs_state, dict):
+            fcs_state["manual_pitch_override"] = bool(mpo_enabled)
+
+        if _single_press("spd_brk_fwd", "hotas_spd_brk_fwd_prev_down"):
+            _set_speedbrake_pct(0.0, "RETRACT")
+        if _single_press("spd_brk_aft", "hotas_spd_brk_aft_prev_down"):
+            _set_speedbrake_pct(100.0, "EXTEND")
+
+        if _single_press("cms_up", "hotas_cms_up_prev_down"):
+            _cms_action("JAM")
+        if _single_press("cms_left", "hotas_cms_left_prev_down"):
+            _cms_action("REMOVE")
+        if _single_press("cms_down", "hotas_cms_down_prev_down"):
+            _cms_action("CASE")
+        if _single_press("cms_right", "hotas_cms_right_prev_down"):
+            _cms_action("EGL")
+
+        if _single_press("cffl_fwd", "hotas_cffl_fwd_prev_down"):
+            _dispense_cm_program(1)
+        if _single_press("cffl_aft", "hotas_cffl_aft_prev_down"):
+            _dispense_cm_program(2)
+        if _single_press("cffl_z", "hotas_cffl_z_prev_down"):
+            _dispense_cm_program(3)
+
+        tms_up_kind = _press_kind_on_release("tms_up")
+        tms_down_kind = _press_kind_on_release("tms_down")
+        tms_left_kind = _press_kind_on_release("tms_left")
+        tms_right_kind = _press_kind_on_release("tms_right")
+        if tms_up_kind == "short":
+            _mark_sensor_nts("AS" if str(system_mode).upper().strip() == "AS" else "AA")
+        elif tms_up_kind == "long":
+            _mark_sensor_nts("AA")
+            fmt_name = _poi_format_name()
+            if fmt_name == "TFLIR":
+                _sensor_state_dict("TFLIR3D_STATE")["track_mode"] = "SINGLE TRK"
+            pmd_dr_state["hotas_current_steerpoint_set_ms"] = int(now_ms)
+        if tms_down_kind == "short":
+            fmt_name = _poi_format_name()
+            if fmt_name == "DAS":
+                _set_system_mode_from_hotas("DGFT", "TMS AFT")
+            else:
+                _clear_sensor_nts(False)
+        elif tms_down_kind == "long":
+            _clear_sensor_nts(True)
+        if tms_left_kind == "short":
+            _step_nts("AS")
+        elif tms_left_kind == "long" and _poi_format_name() == "TFLIR":
+            _activate_laser_spot_track()
+        if tms_right_kind == "short":
+            _step_nts("AA")
+
+        if _rising("pickle"):
+            _release_store_for_mode()
 
         tsd_state = _poi_tsd_state()
         if tsd_state is not None and _rising("zoom_zero"):
@@ -26836,16 +26563,9 @@ def main() -> None:
         "zip",
     }
     _TERM_RESTRICTED_SCOPE_KEYS = {
-        "_DIST_SECRETS",
-        "_DIST_SECRETS_ERROR",
-        "DIST_WEBHOOK_URL",
-        "DIST_AUTH_BYPASS_TS_ENV",
-        "DIST_AUTH_BYPASS_SIG_ENV",
         "main_globals",
         "formats_globals",
         "seclvl_state",
-        "dist_runtime_metadata",
-        "dist_runtime_exe_path",
     }
 
     def _term_safe_import(name: object, globals_obj: object = None, locals_obj: object = None, fromlist: object = (), level: int = 0) -> object:
@@ -28754,17 +28474,9 @@ def main() -> None:
         status_record_area_label = _screen_dbg_area_status_label()
         pmd_dr_state["screen_dbg_record_active"] = bool(record_active)
         status_show_fps_debug = bool(pmd_dr_state.get("show_fps_counter", False))
-        dist_state["menu_access"] = _dist_menu_access_allowed()
-        dist_state["require_user_key"] = bool(dist_runtime_metadata.get("require_user_key", True))
-        if bool(dist_state.get("distributor_locked", False)):
-            dist_state["distributor_selected"] = False
-            dist_state["distributor_value"] = _dist_sanitize_distributor(dist_runtime_metadata.get("distributor", dist_state.get("distributor_value", "")))
-        if status_menu_active_submenu == "DIST_CONFIG":
-            dist_state["distributor_selected"] = False
-            dist_state["distributor_input"] = str(dist_state.get("distributor_value", ""))
-        if status_menu_active_submenu in {"DIST_CONFIG", "DIST_USER_GOL"} and not bool(dist_state.get("menu_access", False)):
-            status_menu_active_submenu = None
-            status_menu_pending_action = None
+        dist_state["menu_access"] = False
+        dist_state["require_user_key"] = False
+        dist_state["distributor_selected"] = False
         try:
             _apply_gun_trigger_fire(dt_sec)
         except Exception:
@@ -29812,15 +29524,6 @@ def main() -> None:
                                         and key not in ins_gps_edit_keys
                                     ):
                                         finalize_ins_gps_data_entry()
-                                    dist_edit_keys = {
-                                        "DIST_CFG_DISTRIBUTOR",
-                                    }
-                                    if (
-                                        status_menu_active_submenu == "DIST_CONFIG"
-                                        and bool(dist_state.get("distributor_selected", False))
-                                        and key not in dist_edit_keys
-                                    ):
-                                        _dist_finalize_distributor_entry()
                                     if (
                                         status_menu_active_submenu == "PMD_DR_CESIUM_TOKEN"
                                         and _pmd_cesium_token_selected()
@@ -29879,7 +29582,6 @@ def main() -> None:
                                         if pmd_keybind_selected is not None:
                                             finalize_pmd_keybind_data_entry(pmd_keybind_selected)
                                         pmd_dr_state["hotas_edit_capture_selected"] = False
-                                        _dist_finalize_distributor_entry()
                                         if status_menu_active_submenu in {"LITES_C2_GOL", "LITES_E7_GOL"}:
                                             status_menu_pending_action = ("open", "LITES", now + OSB_FLASH_MS)
                                         elif status_menu_active_submenu == "SECLVL_MODE_GOL":
@@ -29914,10 +29616,6 @@ def main() -> None:
                                             status_menu_pending_action = ("open", "PMD_CONFIG", now + OSB_FLASH_MS)
                                         elif status_menu_active_submenu == "PMD_CONFIG":
                                             status_menu_pending_action = ("open", "PMD_DR_DEBUG", now + OSB_FLASH_MS)
-                                        elif status_menu_active_submenu == "DIST_USER_GOL":
-                                            status_menu_pending_action = ("open", "DIST_CONFIG", now + OSB_FLASH_MS)
-                                        elif status_menu_active_submenu == "DIST_CONFIG":
-                                            status_menu_pending_action = ("back", None, now + OSB_FLASH_MS)
                                         elif status_menu_active_submenu == "PMD_DR_HOTAS_BIND":
                                             pmd_dr_state["hotas_edit_excluded_inputs"] = []
                                             status_menu_pending_action = ("open", "PMD_DR_HOTAS", now + OSB_FLASH_MS)
@@ -29938,10 +29636,6 @@ def main() -> None:
                                             status_menu_pending_action = ("open", "PMD_DR", now + OSB_FLASH_MS)
                                         else:
                                             status_menu_pending_action = ("back", None, now + OSB_FLASH_MS)
-                                    elif status_menu_active_submenu is None and key == "DIST_CONFIG":
-                                        if _dist_menu_access_allowed():
-                                            _dist_refresh_user_cache()
-                                            status_menu_pending_action = ("open", "DIST_CONFIG", now + OSB_FLASH_MS)
                                     elif status_menu_active_submenu is None and key in STATUS_MENU_ITEMS:
                                         status_menu_pending_action = ("open", key, now + OSB_FLASH_MS)
                                     elif key == "ON_OFF_BACK":
@@ -30124,34 +29818,6 @@ def main() -> None:
                                         idx = int(key.rsplit("_", 1)[1])
                                         seclvl_state["mode_idx"] = idx
                                         status_menu_pending_action = ("open", "SECLVL", now + OSB_FLASH_MS)
-                                    elif key == "DIST_CFG_A1_USER":
-                                        _dist_refresh_user_cache()
-                                        status_menu_pending_action = ("open", "DIST_USER_GOL", now + OSB_FLASH_MS)
-                                    elif key == "DIST_USER_PREV":
-                                        try:
-                                            page_idx = int(dist_state.get("user_page", 0))
-                                        except Exception:
-                                            page_idx = 0
-                                        dist_state["user_page"] = max(0, page_idx - 1)
-                                    elif key == "DIST_USER_NEXT":
-                                        options_raw = dist_state.get("user_options", [])
-                                        total_items = len(options_raw) if isinstance(options_raw, list) else 0
-                                        max_page = max(0, ((total_items + 34) // 35) - 1)
-                                        try:
-                                            page_idx = int(dist_state.get("user_page", 0))
-                                        except Exception:
-                                            page_idx = 0
-                                        dist_state["user_page"] = min(max_page, page_idx + 1)
-                                    elif key.startswith("DIST_USER_OPT_"):
-                                        try:
-                                            item_idx = int(key.rsplit("_", 1)[1])
-                                        except Exception:
-                                            item_idx = -1
-                                        options_raw = dist_state.get("user_options", [])
-                                        options = options_raw if isinstance(options_raw, list) else []
-                                        if 0 <= item_idx < len(options):
-                                            dist_state["selected_user_file"] = _dist_normalize_user_filename(options[item_idx])
-                                            status_menu_pending_action = ("open", "DIST_CONFIG", now + OSB_FLASH_MS)
                                     elif key.startswith("LITES_GOL_C2_"):
                                         idx = int(key.rsplit("_", 1)[1])
                                         lites_state["c2_option"] = idx

@@ -1073,7 +1073,7 @@ class PhmFormat(FormatBase):
                 ("GPA2A1", "OK"),
                 ("GPA2A2", "OK"),
                 ("GPA2B1", "OK"),
-                ("GPA 2B2", "OK"),
+                ("GPA2B2", "OK"),
                 ("GPIOA1", "OK"),
                 ("GPIOA2", "OK"),
             ]
@@ -1081,10 +1081,10 @@ class PhmFormat(FormatBase):
             rows_icp_b = [
                 ("DSB1A", "PIN"),
                 ("DSB1B", "PIN"),
-                ("GPA1A1", "OK"),
-                ("GPA1A2", "OK"),
-                ("GPA1B1", "OK"),
-                ("GPA1B2", "OK"),
+                ("GPB1A1", "OK"),
+                ("GPB1A2", "OK"),
+                ("GPB1B1", "OK"),
+                ("GPB1B2", "OK"),
                 ("GPIOB1", "OK"),
                 ("GPIOB2", "OK"),
             ]

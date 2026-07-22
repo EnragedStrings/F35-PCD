@@ -5,7 +5,6 @@ STATUS_MENU_ITEMS = {
     "DATA_LINK": (1, 1, "DATA\nLINK>"),
     "ECS": (1, 2, "ECS>"),
     "HMD": (1, 3, "HMD>"),
-    "DIST_CONFIG": (1, 4, "DIST\nCONFIG>"),
     "INS_GPS": (2, 0, "INS\nGPS>"),
     "LITES": (2, 1, "LITES>"),
     "ON_OFF": (2, 2, "ON\nOFF>"),

@@ -13,24 +13,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-class DistSecretMaterial:  # compatibility stub
-    pass
-
-
-_DIST_SECRETS = None
-_DIST_SECRETS_ERROR = ""
-
-
-def dist_set_secrets(secrets: Optional[DistSecretMaterial], error: str = "") -> None:
-    global _DIST_SECRETS, _DIST_SECRETS_ERROR
-    _DIST_SECRETS = secrets
-    _DIST_SECRETS_ERROR = str(error or "")
-
-
-def _dist_get_secrets() -> Optional[DistSecretMaterial]:
-    return _DIST_SECRETS
-
-
 def _dist_default_metadata() -> Dict[str, object]:
     return {
         "version": 1,
@@ -117,10 +99,6 @@ def _dist_write_embedded_metadata(_exe_path: Path, _metadata: Dict[str, object])
 
 def _dist_sidecar_path(exe_path: Path) -> Path:
     return exe_path.with_suffix(exe_path.suffix + ".distmeta.json")
-
-
-def _dist_admin_credential_matches(_expected_hash: object, _value: object) -> bool:
-    return False
 
 
 def _3dworld_worker_mode_from_argv(_argv: Optional[List[str]] = None) -> Optional[int]:

@@ -82,6 +82,71 @@ class Asr1Format(FormatBase):
         self._sim_last_ms: int = 0
         self._sim_network_generation: int = -1
 
+    @staticmethod
+    def _asr_runtime_state() -> Dict[str, object]:
+        raw = ASR1_STATE if isinstance(ASR1_STATE, dict) else {}
+        return raw
+
+    def _radar_fail_active(self) -> bool:
+        state = self._asr_runtime_state()
+        if bool(state.get("radar_fail", False)):
+            return True
+        status = str(state.get("radar_status", "")).upper().strip()
+        return status in {"FAIL", "FN", "DEGD", "OT", "INOP"}
+
+    def _draw_radar_fail_overlay(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        white = (255, 255, 255)
+        red = (255, 0, 0)
+        cyan = (0, 255, 255)
+        cx, cy = rect.center
+        arm = max(14, int(round(min(rect.width, rect.height) * 0.16)))
+        inner = max(5, int(round(arm * 0.32)))
+        width = max(2, int(round(arm * 0.10)))
+        points = [
+            (cx, cy - arm),
+            (cx + inner, cy - inner),
+            (cx + arm, cy),
+            (cx + inner, cy + inner),
+            (cx, cy + arm),
+            (cx - inner, cy + inner),
+            (cx - arm, cy),
+            (cx - inner, cy - inner),
+        ]
+        pygame.draw.polygon(surface, red, points, width)
+        pygame.draw.line(surface, white, (cx - arm, cy - arm), (cx + arm, cy + arm), width)
+        pygame.draw.line(surface, white, (cx + arm, cy - arm), (cx - arm, cy + arm), width)
+        font = get_font(24)
+        status = str(self._asr_runtime_state().get("radar_status", "FAIL")).upper().strip() or "FAIL"
+        label = "RADAR FAIL" if status in {"FAIL", "FN", "DEGD", "OT", "INOP"} else f"RADAR {status}"
+        surf = font.render(label, True, white)
+        r = surf.get_rect(centerx=cx, top=cy + arm + 12)
+        pygame.draw.rect(surface, (0, 0, 0), r.inflate(8, 4), 0)
+        surface.blit(surf, r)
+        sub_font = get_font(14)
+        sub = sub_font.render("ASR MALTESE CROSS", True, cyan)
+        sr = sub.get_rect(centerx=cx, top=r.bottom + 4)
+        pygame.draw.rect(surface, (0, 0, 0), sr.inflate(8, 4), 0)
+        surface.blit(sub, sr)
+
+    def _draw_asr_hotas_status(self, surface: pygame.Surface, image_rect: pygame.Rect) -> None:
+        state = self._asr_runtime_state()
+        flags: List[str] = []
+        if bool(state.get("spnt_tgt", False)):
+            flags.append("SPNT TGT")
+        if bool(state.get("nts_designated", False)):
+            kind = str(state.get("nts_kind", "")).upper().strip()
+            flags.append(f"{kind} NTS" if kind in {"AA", "AS"} else "NTS")
+        if bool(state.get("tflir_slew_control", False)):
+            flags.append("TFLIR SLEW")
+        if len(flags) <= 0:
+            return
+        font = get_font(15)
+        text = "  ".join(flags[:3])
+        surf = font.render(text, True, (0, 255, 0))
+        r = surf.get_rect(centerx=image_rect.centerx, top=image_rect.top + 8)
+        pygame.draw.rect(surface, (0, 0, 0), r.inflate(8, 4), 0)
+        surface.blit(surf, r)
+
     def _resolution_mpp(self) -> float:
         try:
             val = int(str(self._res_value).strip())
@@ -2686,6 +2751,12 @@ class Asr1Format(FormatBase):
         gray = (128, 128, 128)
         white = (255, 255, 255)
 
+        if self._radar_fail_active():
+            self._draw_radar_fail_overlay(surface, rect)
+            pygame.draw.rect(surface, cyan, rect, 1)
+            surface.set_clip(prev_clip)
+            return
+
         if self._is_none_like_mode():
             self._show_res_popup = False
             if is_primary:
@@ -2793,6 +2864,7 @@ class Asr1Format(FormatBase):
         self._draw_capture_history_boxes(surface, image_rect)
         self._draw_asr_runways_and_tacan(surface, image_rect)
         self._draw_overlay_icons(surface, image_rect)
+        self._draw_asr_hotas_status(surface, image_rect)
         t1 = self._osb_box(rect, "T1")
         if t1 is not None:
             render_button(
@@ -2967,6 +3039,7 @@ class Asr1Format(FormatBase):
 
         l3 = self._osb_box(rect, "L3")
         if l3 is not None:
+            asr_state = self._asr_runtime_state()
             render_button(
                 surface,
                 l3,
@@ -2976,7 +3049,8 @@ class Asr1Format(FormatBase):
                     function_label="SPNT",
                     options=["TGT"],
                     selected_index=0,
-                    enabled=False,
+                    enabled=True,
+                    is_on=bool(asr_state.get("spnt_tgt", False)),
                     h_align="left",
                     v_align="center",
                     padding=OSB_PADDING,
@@ -3164,6 +3238,13 @@ class Asr1Format(FormatBase):
             self._show_cntl_popup = False
             self._show_res_popup = not self._show_res_popup
             return True
+        if label == "L3":
+            state = self._asr_runtime_state()
+            state["spnt_tgt"] = not bool(state.get("spnt_tgt", False))
+            state["nts_designated"] = bool(state.get("spnt_tgt", False))
+            state["nts_kind"] = "AS"
+            state["spnt_last_ms"] = int(pygame.time.get_ticks())
+            return True
         if label == "T5":
             self._show_mode_popup = False
             self._show_res_popup = False
@@ -3183,4 +3264,4 @@ class Asr1Format(FormatBase):
     def osb_is_interactive(self, label: str) -> bool:
         if self._is_none_like_mode():
             return label in {"T1", "T2", "T5", "R1", "R2", "L1", "L2"}
-        return label in {"T1", "T2", "T3", "T4", "T5", "L5", "R1", "R2", "R3", "R4"}
+        return label in {"T1", "T2", "T3", "T4", "T5", "L3", "L5", "R1", "R2", "R3", "R4"}

@@ -1257,6 +1257,26 @@ class TwdFormat(FormatBase):
             return False
         return bool(TWD_STATE.get("sep_hold_mouse", False))
 
+    def _draw_hotas_status(self, surface: pygame.Surface, rect: pygame.Rect, top_y: int) -> None:
+        flags: List[str] = []
+        if bool(TWD_STATE.get("jam_active", False)):
+            flags.append("JAM")
+        if bool(TWD_STATE.get("case_jamming", False)):
+            flags.append("CASE")
+        try:
+            asr_state = ASR1_STATE if isinstance(ASR1_STATE, dict) else {}
+        except Exception:
+            asr_state = {}
+        if isinstance(asr_state, dict) and bool(asr_state.get("egl_enabled", False)):
+            flags.append("EGL")
+        if len(flags) <= 0:
+            return
+        font = get_font(14)
+        surf = font.render("  ".join(flags), True, (0, 255, 0))
+        tr = surf.get_rect(centerx=rect.centerx, top=int(top_y))
+        pygame.draw.rect(surface, (0, 0, 0), tr.inflate(8, 4), 0)
+        surface.blit(surf, tr)
+
     def _draw_osb_labels(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext, sep_held: bool = False) -> None:
         items: List[Tuple[str, ButtonState]] = [
             (
@@ -1407,6 +1427,7 @@ class TwdFormat(FormatBase):
             semi_rect = semi.get_rect(right=rect.right - 4, top=rect.top + 2)
             surface.blit(oper, oper_rect)
             surface.blit(semi, semi_rect)
+            self._draw_hotas_status(surface, rect, rect.top + 18)
 
             # Subportal format label.
             twd_font = get_font(max(9, int(round(title_font_size * max(0.9, sub_scale)))))
@@ -1497,6 +1518,7 @@ class TwdFormat(FormatBase):
         pygame.draw.rect(surface, (0, 0, 0), heading_box, 0)
         pygame.draw.rect(surface, white, heading_box, 1)
         surface.blit(heading_surf, heading_rect)
+        self._draw_hotas_status(surface, rect, rect.top + DISPLAY_OSB_H + 4)
 
         self._draw_osb_labels(surface, rect, context, sep_held=sep_held)
         self._draw_rwr_ss_popup(surface, rect)

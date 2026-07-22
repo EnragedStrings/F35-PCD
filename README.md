@@ -100,5 +100,3 @@ requirements/           Python dependency lists
 stores.json             Stores/loadout data
 ```
 
-Compiled builds may include private distribution secret material locally, but those files are not required for normal source execution and should not be published.
-

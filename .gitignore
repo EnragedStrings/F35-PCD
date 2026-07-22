@@ -1,0 +1,37 @@
+# Python/runtime cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local simulator output
+Recordings/
+tmp/
+CACHE/
+PMD/
+pcd_settings.json
+launcher_state.json
+*.log
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Local reference/source files
+*.pdf
+
+# Secrets and distribution-only material
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.user
+USERS/
+dist_runtime.py
+dist_secrets.py
+scripts/dist_runtime.py
+scripts/dist_secrets.py
+*.distmeta.json

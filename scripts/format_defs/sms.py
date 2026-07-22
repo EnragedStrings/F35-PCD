@@ -1340,6 +1340,17 @@ class SmsFormat(FormatBase):
         SmsFormat._ui_set("excm_arm_confirm_pending", 1 if pending else 0)
 
     @staticmethod
+    def _excm_armed() -> bool:
+        try:
+            return bool(int(SMS_STATE.get("excm_armed", 0)))
+        except Exception:
+            return bool(SMS_STATE.get("excm_armed", False))
+
+    @staticmethod
+    def _set_excm_armed(armed: bool) -> None:
+        SMS_STATE["excm_armed"] = 1 if bool(armed) else 0
+
+    @staticmethod
     def _excm_confirm_popup_rect(rect: pygame.Rect) -> pygame.Rect:
         width = max(1, int(round(3.0 * DPI)))
         height = max(1, int(round(1.6 * DPI)))
@@ -2626,7 +2637,17 @@ class SmsFormat(FormatBase):
         chaff = int(SMS_STATE.get("chaff", 10))
         flare = int(SMS_STATE.get("flare", 10))
         font = get_font(15)
-        lines = [("CHAFF", str(chaff)), ("FLARE", str(flare))]
+        try:
+            excm_prog = int(SMS_STATE.get("last_cm_program", SMS_STATE.get("excm_program", 0)) or 0)
+        except Exception:
+            excm_prog = 0
+        prog_text = str(excm_prog) if excm_prog in {1, 2, 3} else "--"
+        lines = [
+            ("CHAFF", str(chaff)),
+            ("FLARE", str(flare)),
+            ("EXCM", "ARM" if self._excm_armed() else "STBY"),
+            ("PROG", prog_text),
+        ]
         y = info_box.top + 6
         for label, value in lines:
             l_surf = font.render(label, True, (255, 255, 255))
@@ -2872,8 +2893,10 @@ class SmsFormat(FormatBase):
         if l4_box is not None:
             l4_state = ButtonState(
                 button_id="SMS_L4_EXCM",
-                button_type=ButtonType.STATUS_LABEL,
-                text="EXCM\nARM" if master_arm_on else "EXCM\nSTBY",
+                button_type=ButtonType.MOMENTARY_SINGLE,
+                text="EXCM\nARM" if self._excm_armed() else "EXCM\nSTBY",
+                is_single_function=True,
+                is_on=self._excm_armed(),
                 enabled=master_arm_on,
                 h_align="left",
                 v_align="center",
@@ -2942,7 +2965,7 @@ class SmsFormat(FormatBase):
     def on_click(self, pos: Tuple[int, int], rect: pygame.Rect, context: FormatContext) -> bool:
         self._set_popup_anchor_portal_index(getattr(context, "portal_index", None))
         if self._excm_arm_confirm_pending():
-            # For now, confirmation is visual only; any click dismisses.
+            self._set_excm_armed(True)
             self._set_excm_arm_confirm_pending(False)
             return True
         if not (self._cntl_submenu_open() and self._cntl_inv_prog_open()):
@@ -3199,7 +3222,11 @@ class SmsFormat(FormatBase):
             return True
         if token == "L4":
             if self._master_arm_on():
-                self._set_excm_arm_confirm_pending(True)
+                if self._excm_armed():
+                    self._set_excm_armed(False)
+                    self._set_excm_arm_confirm_pending(False)
+                else:
+                    self._set_excm_arm_confirm_pending(True)
             return True
         if token in {"R3", "R4"}:
             return True

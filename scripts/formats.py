@@ -329,6 +329,10 @@ def set_display_cursor_logical(pos: Tuple[int, int]) -> None:
 SMS_STATE: Dict[str, int] = {
     "chaff": 10,
     "flare": 10,
+    "excm_armed": 0,
+    "excm_program": 0,
+    "last_cm_program": 0,
+    "last_cm_dispense_ms": 0,
     "doors_open": 0,
     "mrm_count": 0,
     "srm_count": 0,
@@ -359,6 +363,15 @@ SMS_STATE: Dict[str, int] = {
     "excm_arm_confirm_pending": 0,
     "cntl_inv_selected_stations": [],
     "cntl_inv_clear_request": [],
+}
+
+ASR1_STATE: Dict[str, object] = {
+    "radar_status": "OK",
+    "radar_fail": False,
+    "spnt_tgt": False,
+    "nts_designated": False,
+    "nts_kind": "",
+    "tflir_slew_control": False,
 }
 
 TWD_STATE: Dict[str, object] = {

@@ -548,15 +548,25 @@ class Tflir3DFormat(FormatBase):
     def _draw_osb_labels(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
         now_ms = int(pygame.time.get_ticks())
         whot_enabled = True
+        state_raw = _shared_get("TFLIR3D_STATE", {})
+        if not isinstance(state_raw, dict):
+            state_raw = {}
         try:
-            st = _shared_get("TFLIR3D_STATE", {})
-            if isinstance(st, dict):
-                if "bhot" in st:
-                    whot_enabled = not bool(st.get("bhot", False))
+            if isinstance(state_raw, dict):
+                if "bhot" in state_raw:
+                    whot_enabled = not bool(state_raw.get("bhot", False))
                 else:
-                    whot_enabled = bool(st.get("whot", True))
+                    whot_enabled = bool(state_raw.get("whot", True))
         except Exception:
             whot_enabled = True
+        try:
+            laser_active = int(state_raw.get("laser_firing_until_ms", 0) or 0) > now_ms
+        except Exception:
+            laser_active = False
+        mtt_enabled = bool(state_raw.get("mtt_enabled", False))
+        ht_enabled = bool(state_raw.get("hold_point_enabled", True))
+        spnt_tgt = bool(state_raw.get("spnt_tgt", state_raw.get("nts_designated", False)))
+        cue_enabled = bool(state_raw.get("cue_enabled", False))
         t2 = self._osb_box(rect, "T2")
         t3 = self._osb_box(rect, "T3")
         t4 = self._osb_box(rect, "T4")
@@ -594,7 +604,7 @@ class Tflir3DFormat(FormatBase):
                     button_type=ButtonType.MOMENTARY_SINGLE,
                     text="LASER",
                     is_single_function=True,
-                    is_on=False,
+                    is_on=laser_active,
                     h_align="center",
                     v_align="top",
                     padding=OSB_PADDING,
@@ -613,7 +623,7 @@ class Tflir3DFormat(FormatBase):
                     button_type=ButtonType.MOMENTARY_SINGLE,
                     text="MTT",
                     is_single_function=True,
-                    is_on=False,
+                    is_on=mtt_enabled,
                     h_align="center",
                     v_align="top",
                     padding=OSB_PADDING,
@@ -698,7 +708,7 @@ class Tflir3DFormat(FormatBase):
                     button_type=ButtonType.MOMENTARY_SINGLE,
                     text="HT",
                     is_single_function=True,
-                    is_on=False,
+                    is_on=ht_enabled,
                     h_align="right",
                     v_align="center",
                     padding=OSB_PADDING,
@@ -718,6 +728,7 @@ class Tflir3DFormat(FormatBase):
                     function_label="SPNT",
                     options=["TGT"],
                     selected_index=0,
+                    is_on=spnt_tgt,
                     h_align="left",
                     v_align="center",
                     padding=OSB_PADDING,
@@ -735,7 +746,7 @@ class Tflir3DFormat(FormatBase):
                     button_id="TFLIR_L4",
                     button_type=ButtonType.DOUBLE_FUNCTION,
                     options=["CUE", "OFF"],
-                    selected_index=1,
+                    selected_index=0 if cue_enabled else 1,
                     h_align="left",
                     v_align="center",
                     padding=OSB_PADDING,
@@ -776,6 +787,36 @@ class Tflir3DFormat(FormatBase):
         p3 = (int(round(tip_x + head_len * math.sin(right_theta))), int(round(tip_y - head_len * math.cos(right_theta))))
         pygame.draw.polygon(surface, cyan, [(tip_x, tip_y), p2, p3])
 
+    def _draw_hotas_status(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        state = _shared_get("TFLIR3D_STATE", {})
+        if not isinstance(state, dict):
+            return
+        now_ms = int(pygame.time.get_ticks())
+        flags: List[str] = []
+        if bool(state.get("nts_designated", False)):
+            flags.append("NTS")
+        track_mode = str(state.get("track_mode", "")).upper().strip()
+        if track_mode != "":
+            flags.append(track_mode)
+        if bool(state.get("laser_spot_track", False)):
+            flags.append("LST")
+        try:
+            laser_until = int(state.get("laser_firing_until_ms", 0) or 0)
+        except Exception:
+            laser_until = 0
+        if laser_until > now_ms:
+            flags.append("LASER")
+        if bool(state.get("tflir_slew_control", False)):
+            flags.append("SLEW")
+        if len(flags) <= 0:
+            return
+        font = get_font(15)
+        text = "  ".join(flags[:4])
+        surf = font.render(text, True, (0, 255, 0))
+        r = surf.get_rect(centerx=rect.centerx, top=rect.top + DISPLAY_OSB_H + 6)
+        pygame.draw.rect(surface, (0, 0, 0), r.inflate(8, 4), 0)
+        surface.blit(surf, r)
+
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         self._ensure_startup_orientation_ref()
         prev_clip = surface.get_clip()
@@ -793,6 +834,7 @@ class Tflir3DFormat(FormatBase):
                 pass
         else:
             draw_centered_text(surface, rect, "TFLIR 3D LOADING", "00FF00", 26)
+        self._draw_hotas_status(surface, rect)
         if is_primary:
             self._draw_osb_labels(surface, rect, context)
         self._draw_north_arrow(surface, rect)
@@ -831,6 +873,38 @@ class Tflir3DFormat(FormatBase):
             state_raw["whot"] = not bool(next_bhot)
             _shared_set("TFLIR3D_STATE", state_raw)
             return True
+        if token == "T2":
+            state_raw["sensor_mode"] = "A-S"
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "T3":
+            state_raw["laser_firing_until_ms"] = int(pygame.time.get_ticks()) + 3000
+            state_raw["laser_last_fire_ms"] = int(pygame.time.get_ticks())
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "T4":
+            state_raw["mtt_enabled"] = not bool(state_raw.get("mtt_enabled", False))
+            state_raw["track_mode"] = "MTT" if bool(state_raw.get("mtt_enabled", False)) else str(state_raw.get("track_mode", "")).replace("MTT", "").strip()
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "T5":
+            state_raw["cntl_page_open"] = not bool(state_raw.get("cntl_page_open", False))
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "R3":
+            state_raw["hold_point_enabled"] = not bool(state_raw.get("hold_point_enabled", True))
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "L3":
+            state_raw["spnt_tgt"] = not bool(state_raw.get("spnt_tgt", False))
+            state_raw["nts_designated"] = bool(state_raw.get("spnt_tgt", False))
+            state_raw["track_mode"] = "AREA TRK" if bool(state_raw.get("spnt_tgt", False)) else ""
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
+        if token == "L4":
+            state_raw["cue_enabled"] = not bool(state_raw.get("cue_enabled", False))
+            _shared_set("TFLIR3D_STATE", state_raw)
+            return True
         return False
 
     def on_click(self, pos: Tuple[int, int], rect: pygame.Rect, context: FormatContext) -> bool:
@@ -845,6 +919,6 @@ class Tflir3DFormat(FormatBase):
 
     def osb_is_interactive(self, label: str) -> bool:
         token = str(label or "").upper().strip()
-        if token in {"R1", "R2"}:
+        if token in {"T1", "T2", "T3", "T4", "T5", "R1", "R2", "R3", "L3", "L4"}:
             return True
         return super().osb_is_interactive(label)

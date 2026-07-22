@@ -380,12 +380,16 @@ class Das3DFormat(FormatBase):
     def _draw_osb_labels(self, surface: pygame.Surface, rect: pygame.Rect, context: FormatContext) -> None:
         now_ms = int(pygame.time.get_ticks())
         whot_enabled = True
+        state_raw = _shared_get("DAS3D_STATE", {})
+        if not isinstance(state_raw, dict):
+            state_raw = {}
         try:
-            st = _shared_get("DAS3D_STATE", {})
-            if isinstance(st, dict):
-                whot_enabled = bool(st.get("whot", True))
+            if isinstance(state_raw, dict):
+                whot_enabled = bool(state_raw.get("whot", True))
         except Exception:
             whot_enabled = True
+        oper_enabled = bool(state_raw.get("oper", False))
+        view_as = str(state_raw.get("view_mode", "A-S")).upper().strip() in {"A-S", "VIEW A-S"}
         t2 = self._osb_box(rect, "T2")
         t3 = self._osb_box(rect, "T3")
         t5 = self._osb_box(rect, "T5")
@@ -401,7 +405,7 @@ class Das3DFormat(FormatBase):
                     button_type=ButtonType.MOMENTARY_SINGLE,
                     text="OPER",
                     is_single_function=True,
-                    is_on=False,
+                    is_on=oper_enabled,
                     h_align="center",
                     v_align="top",
                     padding=OSB_PADDING,
@@ -492,8 +496,9 @@ class Das3DFormat(FormatBase):
                     button_id="DAS_L3",
                     button_type=ButtonType.GOL,
                     function_label="VIEW",
-                    options=["A-S"],
+                    options=["A-S" if view_as else "A-A"],
                     selected_index=0,
+                    is_on=view_as,
                     h_align="left",
                     v_align="center",
                     padding=OSB_PADDING,
@@ -536,6 +541,30 @@ class Das3DFormat(FormatBase):
                 pygame.draw.rect(surface, white, rr.inflate(6, 3), 1)
             surface.blit(surf, rr)
 
+    def _draw_hotas_status(self, surface: pygame.Surface, rect: pygame.Rect) -> None:
+        state = _shared_get("DAS3D_STATE", {})
+        if not isinstance(state, dict):
+            return
+        flags: List[str] = []
+        if bool(state.get("oper", False)):
+            flags.append("OPER")
+        if bool(state.get("nts_designated", False)):
+            flags.append("NTS")
+        view_mode = str(state.get("view_mode", "")).upper().strip()
+        if view_mode != "":
+            flags.append(view_mode)
+        track_mode = str(state.get("track_mode", "")).upper().strip()
+        if track_mode != "":
+            flags.append(track_mode)
+        if len(flags) <= 0:
+            return
+        font = get_font(15)
+        text = "  ".join(flags[:4])
+        surf = font.render(text, True, (0, 255, 0))
+        r = surf.get_rect(centerx=rect.centerx, top=rect.top + DISPLAY_OSB_H + 6)
+        pygame.draw.rect(surface, (0, 0, 0), r.inflate(8, 4), 0)
+        surface.blit(surf, r)
+
     def render(self, surface, rect, is_primary: bool, context: FormatContext) -> None:
         prev_clip = surface.get_clip()
         surface.set_clip(rect)
@@ -557,6 +586,7 @@ class Das3DFormat(FormatBase):
                 pass
         else:
             draw_centered_text(surface, rect, "DAS NOT COOLED", "00FF00", 24)
+        self._draw_hotas_status(surface, rect)
         if is_primary:
             self._draw_osb_labels(surface, rect, context)
         if is_primary and self._cam_menu_open:
@@ -598,8 +628,31 @@ class Das3DFormat(FormatBase):
         if token == "T1":
             context.request_vded(context.portal_index, "MENU")
             return True
+        if token == "T2":
+            state_raw = _shared_get("DAS3D_STATE", {})
+            if isinstance(state_raw, dict):
+                state_raw["oper"] = not bool(state_raw.get("oper", False))
+                _shared_set("DAS3D_STATE", state_raw)
+            return True
         if token == "T3":
             self._cam_menu_open = not bool(self._cam_menu_open)
+            return True
+        if token == "T5":
+            state_raw = _shared_get("DAS3D_STATE", {})
+            if isinstance(state_raw, dict):
+                state_raw["cntl_page_open"] = not bool(state_raw.get("cntl_page_open", False))
+                _shared_set("DAS3D_STATE", state_raw)
+            return True
+        if token == "R1":
+            state_raw = _shared_get("DAS3D_STATE", {})
+            if isinstance(state_raw, dict):
+                state_raw["camera_index"] = 0
+                keys = state_raw.get("camera_keys", [])
+                if isinstance(keys, list) and len(keys) > 0:
+                    state_raw["active_camera_key"] = str(keys[0]).upper().strip()
+                state_raw["nts_designated"] = False
+                state_raw["track_mode"] = ""
+                _shared_set("DAS3D_STATE", state_raw)
             return True
         if token == "R2":
             state_raw = _shared_get("DAS3D_STATE", {})
@@ -607,7 +660,15 @@ class Das3DFormat(FormatBase):
                 state_raw["whot"] = not bool(state_raw.get("whot", True))
                 _shared_set("DAS3D_STATE", state_raw)
             return True
+        if token == "L3":
+            state_raw = _shared_get("DAS3D_STATE", {})
+            if isinstance(state_raw, dict):
+                current = str(state_raw.get("view_mode", "A-S")).upper().strip()
+                state_raw["view_mode"] = "A-A" if current in {"A-S", "VIEW A-S"} else "A-S"
+                state_raw["nts_designated"] = True
+                _shared_set("DAS3D_STATE", state_raw)
+            return True
         return False
 
     def osb_is_interactive(self, label: str) -> bool:
-        return str(label or "").upper().strip() in {"T1", "T3", "R2"}
+        return str(label or "").upper().strip() in {"T1", "T2", "T3", "T5", "R1", "R2", "L3"}
