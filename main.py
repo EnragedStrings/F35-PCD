@@ -8043,26 +8043,84 @@ def draw_portal4_menu_popup(
                 else:
                     active_set.add((str(item), "advisory"))
 
-        def wrap_icaw_text(text: str, max_len: int = 8, max_lines: int = 3) -> List[str]:
-            words = [w for w in str(text).split(" ") if w != ""]
-            if not words:
+        def wrap_icaw_text(text: str, box: pygame.Rect, max_lines: int = 3) -> List[str]:
+            font = formats.get_font(14)
+            max_px = max(12, int(box.width) - 6)
+
+            def fits(raw: str) -> bool:
+                return font.size(str(raw))[0] <= max_px
+
+            def fit_fragment(raw: str) -> str:
+                value = str(raw).strip()
+                if value == "" or fits(value):
+                    return value
+                suffix = ".." if fits("..") else ""
+                for cut in range(len(value), 0, -1):
+                    candidate = value[:cut].rstrip()
+                    if suffix != "" and cut < len(value):
+                        candidate = f"{candidate}{suffix}"
+                    if candidate != "" and fits(candidate):
+                        return candidate
+                return ""
+
+            def token_chunks(raw_token: str) -> List[str]:
+                token = str(raw_token).strip()
+                if token == "":
+                    return []
+                if fits(token):
+                    return [token]
+                chunks: List[str] = []
+                rest = token
+                while rest != "":
+                    best = ""
+                    for cut in range(1, len(rest) + 1):
+                        candidate = rest[:cut]
+                        if fits(candidate):
+                            best = candidate
+                        else:
+                            break
+                    if best == "":
+                        break
+                    chunks.append(best)
+                    rest = rest[len(best):]
+                return chunks if len(chunks) > 0 else [fit_fragment(token)]
+
+            tokens: List[str] = []
+            for word in str(text).split(" "):
+                tokens.extend(token_chunks(word))
+            if len(tokens) <= 0:
                 return [""]
+
             lines: List[str] = []
             current = ""
-            for idx, w in enumerate(words):
-                candidate = w if current == "" else f"{current} {w}"
-                if len(candidate) > max_len and current != "":
-                    lines.append(current)
-                    current = w
-                    if len(lines) == max_lines - 1:
-                        rest = " ".join(words[idx:])
-                        lines.append(rest)
-                        return lines[:max_lines]
-                else:
+            idx = 0
+            while idx < len(tokens):
+                token = tokens[idx]
+                candidate = token if current == "" else f"{current} {token}"
+                if fits(candidate):
                     current = candidate
-            if current != "":
+                    idx += 1
+                    continue
+                if current != "":
+                    lines.append(current)
+                    current = ""
+                    if len(lines) >= max_lines:
+                        break
+                    continue
+                lines.append(fit_fragment(token))
+                idx += 1
+                if len(lines) >= max_lines:
+                    break
+
+            if len(lines) < max_lines and current != "":
                 lines.append(current)
-            return lines[:max_lines]
+            if len(lines) > max_lines:
+                lines = lines[:max_lines]
+            if idx < len(tokens) and len(lines) > 0:
+                remaining = " ".join(tokens[idx:])
+                merged = f"{lines[-1]} {remaining}".strip()
+                lines[-1] = fit_fragment(merged)
+            return [fit_fragment(line) for line in lines[:max_lines]]
 
         for idx, (txt, sev) in enumerate(chunk):
             box = cell_rect_by_name(slots[idx])
@@ -8076,7 +8134,7 @@ def draw_portal4_menu_popup(
                 base_color = (255, 255, 0)
             else:
                 base_color = LINE_COLOR
-            lines = wrap_icaw_text(txt, max_len=8, max_lines=3)
+            lines = wrap_icaw_text(txt, box, max_lines=3)
             max_draw = min(3, len(lines))
             for i in range(max_draw):
                 draw_line(box, i + 1, lines[i], base_color, flashing, box_selected=False)
@@ -17048,6 +17106,8 @@ def main() -> None:
                     continue
                 seen.add(key)
                 items.append(key)
+        severity_order = {"warning": 0, "caution": 1, "advisory": 2}
+        items.sort(key=lambda item: (str(item[0]).lstrip(">").upper(), severity_order.get(str(item[1]).lower(), 9)))
         return items
 
     def get_comm_state() -> Dict[str, object]:
