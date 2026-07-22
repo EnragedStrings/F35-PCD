@@ -556,6 +556,10 @@ class Das3DFormat(FormatBase):
         track_mode = str(state.get("track_mode", "")).upper().strip()
         if track_mode != "":
             flags.append(track_mode)
+        if bool(state.get("expand_mode", False)):
+            flags.append("EXP")
+        if bool(state.get("hmd_symbology_blank", False)):
+            flags.append("HMD BLANK")
         if len(flags) <= 0:
             return
         font = get_font(15)

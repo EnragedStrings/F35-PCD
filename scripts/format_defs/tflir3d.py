@@ -793,13 +793,18 @@ class Tflir3DFormat(FormatBase):
             return
         now_ms = int(pygame.time.get_ticks())
         flags: List[str] = []
-        if bool(state.get("nts_designated", False)):
+        nts_blank = bool(state.get("nts_symbology_blank", False))
+        if bool(state.get("nts_designated", False)) and not nts_blank:
             flags.append("NTS")
         track_mode = str(state.get("track_mode", "")).upper().strip()
         if track_mode != "":
             flags.append(track_mode)
         if bool(state.get("laser_spot_track", False)):
             flags.append("LST")
+        if bool(state.get("expand_mode", False)):
+            flags.append("EXP")
+        if nts_blank:
+            flags.append("NTS BLANK")
         try:
             laser_until = int(state.get("laser_firing_until_ms", 0) or 0)
         except Exception:

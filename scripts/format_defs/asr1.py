@@ -131,17 +131,23 @@ class Asr1Format(FormatBase):
     def _draw_asr_hotas_status(self, surface: pygame.Surface, image_rect: pygame.Rect) -> None:
         state = self._asr_runtime_state()
         flags: List[str] = []
-        if bool(state.get("spnt_tgt", False)):
-            flags.append("SPNT TGT")
-        if bool(state.get("nts_designated", False)):
-            kind = str(state.get("nts_kind", "")).upper().strip()
-            flags.append(f"{kind} NTS" if kind in {"AA", "AS"} else "NTS")
+        nts_blank = bool(state.get("nts_symbology_blank", False))
+        if not nts_blank:
+            if bool(state.get("spnt_tgt", False)):
+                flags.append("SPNT TGT")
+            if bool(state.get("nts_designated", False)):
+                kind = str(state.get("nts_kind", "")).upper().strip()
+                flags.append(f"{kind} NTS" if kind in {"AA", "AS"} else "NTS")
+        if bool(state.get("expand_mode", False)):
+            flags.append("EXP")
+        if nts_blank:
+            flags.append("NTS BLANK")
         if bool(state.get("tflir_slew_control", False)):
             flags.append("TFLIR SLEW")
         if len(flags) <= 0:
             return
         font = get_font(15)
-        text = "  ".join(flags[:3])
+        text = "  ".join(flags[:4])
         surf = font.render(text, True, (0, 255, 0))
         r = surf.get_rect(centerx=image_rect.centerx, top=image_rect.top + 8)
         pygame.draw.rect(surface, (0, 0, 0), r.inflate(8, 4), 0)

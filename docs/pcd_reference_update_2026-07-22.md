@@ -41,10 +41,22 @@ This file records the code and report changes made from the 2025 AFTTP 3-3, Batt
 
 ## Remaining Known Limitations
 
-- HOTAS DMS, FOV, trim, mic, external-light, management-switch axis details, and real cursor slew axis behavior still need implementation.
-- Trigger is still single-stage. The attached table requires half detent for TFLIR laser fire and second detent for gun fire.
+- HOTAS trim, external-light, management-switch axis details, and real cursor slew axis behavior still need implementation.
+- Trigger uses the existing single keybind as a short/hold approximation: release before 250 ms fires the TFLIR/ASR laser action, and holding past 250 ms fires the gun. The hardware table describes separate half and second detents.
 - Weapon release is a local station decrement, not a reference-level release authorization model with LAR/DLZ, inhibit conditions, and post-release effects.
 - ASR, DAS, TFLIR, TSD, TWD, SMS, and PHM still need a shared sensor/mission state model for 1:1 troubleshooting and symbology.
 - TFLIR/DAS `CNTL>` pages, ASR MTT/search/track behavior, TWD alert/audio/degrade behavior, SMS/WPN-A jettison/error pages, and PHM/CNI network troubleshooting remain incomplete.
 
 The merged gap report is updated in `docs/pcd_reference_gap_report.md`.
+
+## HOTAS Keybind And ICAWS Follow-Up
+
+- Reviewed the current local `PMD/DR>DEBUG>KEYBINDS>HOTAS` bindings from ignored `pcd_settings.json`; no per-short/per-long bindings were added. Existing button/hat/axis actions now feed both short and long press handling.
+- Added DMS/Display Management behavior for POI movement and HMD selection: DMS forward short moves POI to HMD, DMS forward long toggles HMD blanking, DMS left/right rotate POI, and DMS aft returns from the virtual HMD POI before stepping counter-clockwise.
+- Added FOV switch behavior across the implemented POI targets: left/right zoom or expand out/in using the existing bound hat directions, aft/down exits expand, and forward/hold blanks the moving map, HMD symbology, or NTS symbology depending on the selected display or sensor.
+- Added MIC switch actions for voice recognition and BUR/COM D assignment while preserving the existing COM A/COM B transmit behavior.
+- Added a single-keybind trigger approximation so the same gun-trigger binding supports short laser action and long gun fire.
+- Corrected paddle/disconnect behavior so it disconnects autopilot, NWS, and open refuel-door/AAR state instead of opening the refuel door when nothing is active.
+- Expanded the HMD/DAS/TFLIR/ASR TMS paths so HMD can participate in NTS designation, single target track, and DGFT transitions alongside the sensor formats already implemented.
+- Rebuilt the ICAWS debug catalog from the attached reference table-of-contents screenshots, using screenshot highlight colors as severity: red warning, yellow caution, green advisory. Entries keep their EP page references in the alert detail lines.
+- Sorted `PMD/DR>DEBUG>ICAWS DEBUG` alphabetically by alert title, preserving duplicate titles when the reference list gives more than one severity.

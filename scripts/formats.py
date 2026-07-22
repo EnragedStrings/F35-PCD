@@ -372,6 +372,8 @@ ASR1_STATE: Dict[str, object] = {
     "nts_designated": False,
     "nts_kind": "",
     "tflir_slew_control": False,
+    "expand_mode": False,
+    "nts_symbology_blank": False,
 }
 
 TWD_STATE: Dict[str, object] = {
@@ -609,6 +611,8 @@ TFLIR3D_STATE: Dict[str, object] = {
     "hold_point_enabled": True,
     "whot": True,
     "bhot": False,
+    "expand_mode": False,
+    "nts_symbology_blank": False,
 }
 DAS3D_STATE: Dict[str, object] = {
     "camera_keys": ["DAS-BA", "DAS-BF", "DAS-L", "DAS-R", "DAS-TA", "DAS-TF"],
@@ -633,6 +637,8 @@ DAS3D_STATE: Dict[str, object] = {
     },
     "zoom_ratio": 2.9,
     "fov_v_deg": 29.0,
+    "expand_mode": False,
+    "hmd_symbology_blank": False,
     "fov_h_deg": 29.0,
     "whot": True,
 }
